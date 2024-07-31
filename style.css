@@ -6,6 +6,7 @@ body {
     height: 100vh;
     margin: 0;
     background-color: #f0f0f0;
+    padding-top: 20px; /* Added padding to prevent cutoff */
 }
 
 #app, #homepage {
@@ -15,6 +16,7 @@ body {
     width: 80%;
     max-width: 800px;
     text-align: center;
+    border-radius: 10px; /* Rounded corners for better appearance */
 }
 
 .slide {
@@ -40,6 +42,21 @@ button {
 }
 
 button:hover {
+    background-color: #0056b3;
+}
+
+select {
+    padding: 10px;
+    margin: 10px;
+    background-color: #007bff;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    transition: background-color 0.3s;
+    cursor: pointer;
+}
+
+select:hover {
     background-color: #0056b3;
 }
 
@@ -148,7 +165,7 @@ button:hover {
     width: 10px;
     height: 50px;
     top: 60px;
-    left: -30px;
+    left: 350px;
     transform: rotate(-45deg);
     transform-origin: top right;
 }
@@ -157,7 +174,7 @@ button:hover {
     width: 10px;
     height: 50px;
     top: 60px;
-    left: 30px;
+    left: 417px;
     transform: rotate(45deg);
     transform-origin: top left;
 }
@@ -165,8 +182,7 @@ button:hover {
 .hangman .left-leg {
     width: 10px;
     height: 50px;
-    top: 130px;
-    left: -20px;
+    top: 190px;
     transform: rotate(-45deg);
     transform-origin: top right;
 }
@@ -174,8 +190,8 @@ button:hover {
 .hangman .right-leg {
     width: 10px;
     height: 50px;
-    top: 130px;
-    left: 20px;
+    top: 190px;
+    left: 383px;
     transform: rotate(45deg);
     transform-origin: top left;
 }
@@ -192,4 +208,78 @@ button:hover {
 
 .feedback.incorrect {
     color: red;
+}
+
+.memory-game-container {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin: 20px 0;
+}
+
+.memory-card {
+    perspective: 1000px;
+    cursor: pointer;
+}
+
+.memory-card .card-front, .memory-card .card-back {
+    width: 100px;
+    height: 150px;
+    backface-visibility: hidden;
+    transition: transform 0.5s;
+    position: absolute;
+    top: 0;
+    left: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+}
+
+.memory-card .card-front {
+    background-color: #007bff;
+    color: white;
+    transform: rotateY(0deg);
+}
+
+.memory-card .card-back {
+    background-color: #fff;
+    color: #007bff;
+    transform: rotateY(180deg);
+}
+
+.memory-card.flipped .card-front {
+    transform: rotateY(180deg);
+}
+
+.memory-card.flipped .card-back {
+    transform: rotateY(0deg);
+}
+
+#modules-container {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+}
+
+.module {
+    background-color: #e0e0e0;
+    padding: 20px;
+    border-radius: 10px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    transition: transform 0.3s;
+    cursor: pointer;
+}
+
+.module:hover {
+    transform: scale(1.05);
+}
+
+.module h3 {
+    margin-top: 0;
+}
+
+.module button {
+    margin-top: 10px;
 }

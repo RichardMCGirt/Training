@@ -1,13 +1,12 @@
 document.addEventListener("DOMContentLoaded", function() {
-    const buttonContainer = document.getElementById('button-container');
-    for (let i = 0; i < 23; i++) {
-        const button = document.createElement('button');
-        button.innerHTML = `Question ${3 + i}: Mini-Game ${i + 1}`;
-        button.setAttribute('onclick', `goToSlide(${4 + i})`);
-        buttonContainer.appendChild(button);
-    }
+    populateDropdown();
     shuffleQuestions();
-    showSlide(questionOrder[currentSlide]);
+    const selectedSlide = localStorage.getItem('selectedSlide');
+    if (selectedSlide) {
+        currentSlide = parseInt(selectedSlide, 10) - 2;
+        localStorage.removeItem('selectedSlide');
+    }
+    showSlide(currentSlide);
     setRandomBackgrounds(); // Set random background images on page load
 });
 
@@ -18,17 +17,42 @@ const words = ["storage", "sharing", "recovery", "collaboration"];
 let currentWord = words[Math.floor(Math.random() * words.length)];
 let attempts = 6;
 let guessedLetters = [];
-const miniGames = [];
+const miniGames = [setupMiniGame1, setupMiniGame2, setupMiniGame3, setupMiniGame4, setupMiniGame5, setupMiniGame6]; // Add more mini-games as needed
 const totalQuestions = 25;
 let questionOrder = [];
+let selectedCards = [];
+let matchedPairs = 0;
+const allQuestions = [
+    { question: "File storage", answer: "Primary use of Dropbox" },
+    { question: "File sharing", answer: "Can share files with others" },
+    { question: "File recovery", answer: "Allows you to recover deleted files" },
+    { question: "Document collaboration", answer: "Dropbox Paper feature" },
+    // Add more questions about anything
+    { question: "Capital of France", answer: "Paris" },
+    { question: "Fastest land animal", answer: "Cheetah" },
+    { question: "Largest planet in our solar system", answer: "Jupiter" },
+    { question: "H2O is the chemical formula for what?", answer: "Water" },
+    { question: "What year did the Titanic sink?", answer: "1912" },
+];
+
+// Populate the dropdown with question options
+function populateDropdown() {
+    const selector = document.getElementById('question-selector');
+    for (let i = 1; i <= totalQuestions; i++) {
+        const option = document.createElement('option');
+        option.value = i + 1;
+        option.textContent = `Question ${i}: Mini-Game ${i}`;
+        selector.appendChild(option);
+    }
+}
 
 // Show the current slide
 function showSlide(index) {
     const slides = document.querySelectorAll('.slide');
     slides.forEach(slide => slide.classList.remove('active'));
     slides[index].classList.add('active');
-    if (miniGames[index]) {
-        miniGames[index]();
+    if (miniGames[index - 2]) {
+        miniGames[index - 2]();
     }
 }
 
@@ -44,7 +68,7 @@ function restart() {
     console.log("Restarting the training module");
     currentSlide = 0;
     shuffleQuestions();
-    showSlide(questionOrder[currentSlide]);
+    showSlide(currentSlide);
     setRandomBackgrounds(); // Reset background images on restart
     // Reset hangman game
     initializeHangman();
@@ -54,9 +78,9 @@ function restart() {
 function nextSlide() {
     currentSlide++;
     if (currentSlide < totalQuestions) {
-        showSlide(questionOrder[currentSlide]);
+        showSlide(currentSlide);
     } else {
-        showSlide(totalQuestions + 1); // Show the congratulations slide
+        showSlide(totalQuestions); // Show the congratulations slide
     }
     console.log(`Moving to the next slide: ${currentSlide}`);
 }
@@ -71,6 +95,13 @@ function shuffleQuestions() {
     console.log("Shuffled question order:", questionOrder);
 }
 
+// Select question from dropdown
+function selectQuestion() {
+    const selector = document.getElementById('question-selector');
+    const slideIndex = parseInt(selector.value, 10) - 1;
+    goToSlide(slideIndex);
+}
+
 // Reset matching game
 function resetMatching() {
     selectedElement = null;
@@ -83,9 +114,75 @@ function resetMatching() {
     document.getElementById('next').style.display = 'none';
 }
 
-// Matching game logic
+// Memory matching game logic
+function setupMemoryGame() {
+    console.log("Setting up Memory Matching Game");
+    const container = document.getElementById('memory-game-container');
+    container.innerHTML = '';
+    const cards = createMemoryCards();
+    shuffleArray(cards);
+    cards.forEach(card => container.appendChild(card));
+    matchedPairs = 0;
+    selectedCards = [];
+}
+
+function createMemoryCards() {
+    const questions = allQuestions.slice(0, 4);
+
+    const cards = [];
+    questions.forEach((item, index) => {
+        const questionCard = document.createElement('div');
+        questionCard.className = 'memory-card';
+        questionCard.dataset.id = index;
+        questionCard.dataset.type = 'question';
+        questionCard.innerHTML = `<div class="card-front">?</div><div class="card-back">${item.question}</div>`;
+        questionCard.addEventListener('click', handleMemoryCardClick);
+        cards.push(questionCard);
+
+        const answerCard = document.createElement('div');
+        answerCard.className = 'memory-card';
+        answerCard.dataset.id = index;
+        answerCard.dataset.type = 'answer';
+        answerCard.innerHTML = `<div class="card-front">?</div><div class="card-back">${item.answer}</div>`;
+        answerCard.addEventListener('click', handleMemoryCardClick);
+        cards.push(answerCard);
+    });
+    return cards;
+}
+
+function handleMemoryCardClick(event) {
+    const card = event.currentTarget;
+    if (selectedCards.length < 2 && !card.classList.contains('flipped')) {
+        card.classList.add('flipped');
+        selectedCards.push(card);
+
+        if (selectedCards.length === 2) {
+            checkMemoryMatch();
+        }
+    }
+}
+
+function checkMemoryMatch() {
+    const [firstCard, secondCard] = selectedCards;
+    if (firstCard.dataset.id === secondCard.dataset.id && firstCard.dataset.type !== secondCard.dataset.type) {
+        matchedPairs++;
+        selectedCards = [];
+        if (matchedPairs === 4) {
+            document.getElementById('memory-feedback').textContent = 'All correct! Well done!';
+            document.getElementById('next').style.display = 'block';
+        }
+    } else {
+        setTimeout(() => {
+            firstCard.classList.remove('flipped');
+            secondCard.classList.remove('flipped');
+            selectedCards = [];
+        }, 1000);
+    }
+}
+
+// Matching game logic (drawing lines)
 function setupMatchingGame() {
-    console.log("Setting up Matching Game");
+    console.log("Setting up Line Matching Game");
     const questionsContainer = document.querySelector('.questions');
     const answersContainer = document.querySelector('.answers');
     const questions = Array.from(questionsContainer.children);
@@ -139,6 +236,7 @@ function setupMatchingGame() {
                 } else {
                     selectedElement.classList.add('incorrect');
                     element.classList.add('incorrect');
+                    setTimeout(() => line.remove(), 1000);
                 }
 
                 selectedElement.classList.remove('selected');
@@ -159,16 +257,16 @@ function checkMatching() {
     });
 
     if (correct === lines.length) {
-        feedback.textContent = 'All correct!';
+        feedback.textContent = 'All correct! Well done! Proceed to the next question?';
         feedback.classList.add('correct');
         feedback.classList.remove('incorrect');
+        document.getElementById('next').style.display = 'block';
     } else {
         feedback.textContent = `You got ${correct} out of ${lines.length} correct.`;
         feedback.classList.add('incorrect');
         feedback.classList.remove('correct');
     }
 
-    document.getElementById('next').style.display = 'block';
     console.log("Matching game feedback:", feedback.textContent);
 }
 
@@ -250,8 +348,8 @@ function setupMiniGame1() {
     const container = document.getElementById('mini-game-1-container');
     container.innerHTML = `
         <p>Dropbox allows file sharing?</p>
-        <button onclick="checkAnswer(true, 1)">True</button>
-        <button onclick="checkAnswer(false, 1)">False</button>
+        <button onclick="checkAnswer(true, true)">True</button>
+        <button onclick="checkAnswer(false, true)">False</button>
     `;
 }
 
@@ -260,14 +358,60 @@ function setupMiniGame2() {
     const container = document.getElementById('mini-game-2-container');
     container.innerHTML = `
         <p>Which feature allows collaboration in Dropbox?</p>
-        <button onclick="checkAnswer(true, 2)">Dropbox Paper</button>
-        <button onclick="checkAnswer(false, 2)">File sharing</button>
+        <button onclick="checkAnswer('Dropbox Paper', 'Dropbox Paper')">Dropbox Paper</button>
+        <button onclick="checkAnswer('File sharing', 'Dropbox Paper')">File sharing</button>
     `;
 }
 
-function checkAnswer(answer, gameId) {
-    const feedback = document.getElementById(`mini-game-${gameId}-feedback`);
-    if (answer) {
+function setupMiniGame3() {
+    // Example game: Multiple Choice
+    const container = document.getElementById('mini-game-3-container');
+    container.innerHTML = `
+        <p>What is the capital of France?</p>
+        <button onclick="checkAnswer('Paris', 'Paris')">Paris</button>
+        <button onclick="checkAnswer('London', 'Paris')">London</button>
+        <button onclick="checkAnswer('Rome', 'Paris')">Rome</button>
+        <button onclick="checkAnswer('Berlin', 'Paris')">Berlin</button>
+    `;
+}
+
+function setupMiniGame4() {
+    // Example game: Multiple Choice
+    const container = document.getElementById('mini-game-4-container');
+    container.innerHTML = `
+        <p>Which is the largest planet in our solar system?</p>
+        <button onclick="checkAnswer('Jupiter', 'Jupiter')">Jupiter</button>
+        <button onclick="checkAnswer('Saturn', 'Jupiter')">Saturn</button>
+        <button onclick="checkAnswer('Earth', 'Jupiter')">Earth</button>
+        <button onclick="checkAnswer('Mars', 'Jupiter')">Mars</button>
+    `;
+}
+
+function setupMiniGame5() {
+    // Example game: Quiz
+    const container = document.getElementById('mini-game-5-container');
+    container.innerHTML = `
+        <p>What is the fastest land animal?</p>
+        <button onclick="checkAnswer('Cheetah', 'Cheetah')">Cheetah</button>
+        <button onclick="checkAnswer('Lion', 'Cheetah')">Lion</button>
+        <button onclick="checkAnswer('Tiger', 'Cheetah')">Tiger</button>
+        <button onclick="checkAnswer('Leopard', 'Cheetah')">Leopard</button>
+    `;
+}
+
+function setupMiniGame6() {
+    // Example game: True or False
+    const container = document.getElementById('mini-game-6-container');
+    container.innerHTML = `
+        <p>Is Jupiter the largest planet in our solar system?</p>
+        <button onclick="checkAnswer(true, true)">True</button>
+        <button onclick="checkAnswer(false, true)">False</button>
+    `;
+}
+
+function checkAnswer(selectedAnswer, correctAnswer) {
+    const feedback = document.getElementById(`mini-game-feedback`);
+    if (selectedAnswer === correctAnswer) {
         feedback.textContent = "Correct!";
         feedback.classList.add('correct');
         feedback.classList.remove('incorrect');
@@ -277,7 +421,7 @@ function checkAnswer(answer, gameId) {
         feedback.classList.remove('correct');
     }
     document.getElementById('next').style.display = 'block';
-    console.log(`Mini-Game ${gameId} answer checked:`, answer);
+    console.log(`Answer checked: selectedAnswer=${selectedAnswer}, correctAnswer=${correctAnswer}`);
 }
 
 // Utility function to shuffle array
