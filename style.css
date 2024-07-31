@@ -6,7 +6,7 @@ body {
     height: 100vh;
     margin: 0;
     background-color: #f0f0f0;
-    padding-top: 20px; /* Added padding to prevent cutoff */
+    padding-top: 20px;
 }
 
 #app, #homepage {
@@ -16,7 +16,7 @@ body {
     width: 80%;
     max-width: 800px;
     text-align: center;
-    border-radius: 10px; /* Rounded corners for better appearance */
+    border-radius: 10px;
 }
 
 .slide {

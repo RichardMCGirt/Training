@@ -3,24 +3,106 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Training Modules Home</title>
+    <title>Dropbox Training App</title>
     <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/node-vibrant@3.1.6/dist/vibrant.min.js"></script>
+
 </head>
 <body>
-    <div id="homepage">
-        <h1>Welcome to the Training Modules</h1>
-        <p>Select a training category to begin:</p>
-        <div class="module" onclick="navigateTo('dropbox_training.html')">
-            <h3>Dropbox Training</h3>
-            <p>Click here to start Dropbox training modules.</p>
+    <div id="app">
+        <div id="slides">
+            <div class="slide active" id="slide-1">
+                <h1>Welcome to Dropbox Training</h1>
+                <p>Select a question to begin:</p>
+                <select id="question-selector" onchange="selectQuestion()">
+                    <option value="" disabled selected>Select a question</option>
+                    <!-- Options will be added dynamically -->
+                </select>
+            </div>
+            <div class="slide" id="slide-2">
+                <h1>Match the Dropbox features to their descriptions</h1>
+                <p>Click a feature or description to select, then click its corresponding match.</p>
+                <div class="matching-container">
+                    <div class="questions">
+                        <div class="question" data-id="1">File storage</div>
+                        <div class="question" data-id="2">File sharing</div>
+                        <div class="question" data-id="3">File recovery</div>
+                        <div class="question" data-id="4">Document collaboration</div>
+                    </div>
+                    <div class="answers">
+                        <div class="answer" data-id="3">Allows you to recover deleted files</div>
+                        <div class="answer" data-id="2">Can share files with others</div>
+                        <div class="answer" data-id="4">Dropbox Paper feature</div>
+                        <div class="answer" data-id="1">Primary use of Dropbox</div>
+                    </div>
+                    <svg id="svg" class="svg-overlay"></svg>
+                </div>
+                <button onclick="checkMatching()">Submit</button>
+                <button onclick="resetMatching()">Retry</button>
+                <div id="feedback" class="feedback"></div>
+                <button onclick="nextSlide()" id="next" style="display:none;">Next</button>
+            </div>
+            <div class="slide" id="slide-3">
+                <h1>Hangman Game</h1>
+                <p>Guess the Dropbox related word:</p>
+                <div id="hangman-container"></div>
+                <input type="text" id="guess-input" placeholder="Enter a letter">
+                <button onclick="makeGuess()">Guess</button>
+                <div id="hangman-feedback" class="feedback"></div>
+                <button onclick="nextSlide()" id="next" style="display:none;">Next</button>
+            </div>
+            <div class="slide" id="slide-4">
+                <h1>Memory Matching Game</h1>
+                <p>Match the questions with the correct answers by clicking the cards.</p>
+                <div id="memory-game-container" class="memory-game-container"></div>
+                <button onclick="setupMemoryGame()">Retry</button>
+                <div id="memory-feedback" class="feedback"></div>
+                <button onclick="nextSlide()" id="next" style="display:none;">Next</button>
+            </div>
+            <div class="slide" id="slide-5">
+                <h1>True or False</h1>
+                <div id="mini-game-1-container"></div>
+                <div id="mini-game-1-feedback" class="feedback"></div>
+                <button onclick="nextSlide()" id="next" style="display:none;">Next</button>
+            </div>
+            <div class="slide" id="slide-6">
+                <h1>Quiz</h1>
+                <div id="mini-game-2-container"></div>
+                <div id="mini-game-2-feedback" class="feedback"></div>
+                <button onclick="nextSlide()" id="next" style="display:none;">Next</button>
+            </div>
+            <div class="slide" id="slide-7">
+                <h1>Multiple Choice</h1>
+                <div id="mini-game-3-container"></div>
+                <div id="mini-game-3-feedback" class="feedback"></div>
+                <button onclick="nextSlide()" id="next" style="display:none;">Next</button>
+            </div>
+            <div class="slide" id="slide-8">
+                <h1>Multiple Choice</h1>
+                <div id="mini-game-4-container"></div>
+                <div id="mini-game-4-feedback" class="feedback"></div>
+                <button onclick="nextSlide()" id="next" style="display:none;">Next</button>
+            </div>
+            <div class="slide" id="slide-9">
+                <h1>Quiz</h1>
+                <div id="mini-game-5-container"></div>
+                <div id="mini-game-5-feedback" class="feedback"></div>
+                <button onclick="nextSlide()" id="next" style="display:none;">Next</button>
+            </div>
+            <div class="slide" id="slide-10">
+                <h1>True or False</h1>
+                <div id="mini-game-6-container"></div>
+                <div id="mini-game-6-feedback" class="feedback"></div>
+                <button onclick="nextSlide()" id="next" style="display:none;">Next</button>
+            </div>
+            <!-- Add more slides as needed up to slide-27 -->
+            <div class="slide" id="slide-27">
+                <h1>Congratulations!</h1>
+                <p>You have completed the Dropbox training module.</p>
+                <button onclick="restart()">Restart</button>
+            </div>
         </div>
-        <!-- Add more training categories as needed -->
     </div>
-
-    <script>
-        function navigateTo(url) {
-            window.location.href = url;
-        }
-    </script>
+    <script src="dropbox_training.js"></script>
 </body>
 </html>

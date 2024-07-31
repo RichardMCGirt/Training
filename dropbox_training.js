@@ -8,6 +8,7 @@ document.addEventListener("DOMContentLoaded", function() {
     }
     showSlide(currentSlide);
     setRandomBackgrounds(); // Set random background images on page load
+    addRandomQuestions(); // Add random questions to slides
 });
 
 let currentSlide = 0;
@@ -70,6 +71,7 @@ function restart() {
     shuffleQuestions();
     showSlide(currentSlide);
     setRandomBackgrounds(); // Reset background images on restart
+    addRandomQuestions(); // Reset random questions on restart
     // Reset hangman game
     initializeHangman();
 }
@@ -486,4 +488,14 @@ function getContrastingColor(hex) {
     const b = (rgb >>  0) & 0xff;
     const brightness = (r * 299 + g * 587 + b * 114) / 1000;
     return brightness > 128 ? 'black' : 'white';
+}
+
+function addRandomQuestions() {
+    const slides = document.querySelectorAll('.slide');
+    slides.forEach((slide, index) => {
+        if (index > 0 && index < slides.length - 1) {
+            const question = allQuestions[Math.floor(Math.random() * allQuestions.length)];
+            slide.querySelector('#random-question').textContent = question.question;
+        }
+    });
 }

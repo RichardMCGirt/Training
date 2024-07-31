@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dropbox Training App</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/node-vibrant@3.1.6/dist/vibrant.min.js"></script>
+</head>
+<body>
+    <div id="app">
+        <div id="slides">
+            <div class="slide active" id="slide-1">
+                <h1>Welcome to Dropbox Training</h1>
+                <p>Select a question to begin:</p>
+                <select id="question-selector" onchange="selectQuestion()">
+                    <option value="" disabled selected>Select a question</option>
+                </select>
+            </div>
+            <!-- Slides for different training activities -->
+            <div class="slide" id="slide-2">
+                <h1>Match the Dropbox features to their descriptions</h1>
+                <p>Click a feature or description to select, then click its corresponding match.</p>
+                <div class="matching-container">
+                    <div class="questions"></div>
+                    <div class="answers"></div>
+                    <svg id="svg" class="svg-overlay"></svg>
+                </div>
+                <button onclick="checkMatching()">Submit</button>
+                <button onclick="resetMatching()">Retry</button>
+                <div id="feedback" class="feedback"></div>
+                <button onclick="nextSlide()" id="next" style="display:none;">Next</button>
+            </div>
+            <!-- Additional slides with random questions -->
+            <div class="slide" id="slide-3">
+                <h1>Random Question</h1>
+                <p id="random-question"></p>
+                <button onclick="nextSlide()">Next</button>
+            </div>
+            <!-- Add more slides as needed up to slide-27 -->
+            <div class="slide" id="slide-27">
+                <h1>Congratulations!</h1>
+                <p>You have completed the Dropbox training module.</p>
+                <button onclick="restart()">Restart</button>
+            </div>
+        </div>
+    </div>
+    <script src="dropbox_training.js"></script>
+</body>
+</html>
