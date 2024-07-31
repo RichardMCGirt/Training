@@ -432,19 +432,58 @@ function shuffleArray(array) {
     }
 }
 
-// Function to set random background images
 async function setRandomBackgrounds() {
     const slides = document.querySelectorAll('.slide');
     for (const slide of slides) {
         try {
             const response = await fetch('https://dog.ceo/api/breeds/image/random');
             const data = await response.json();
-            slide.style.backgroundImage = `url(${data.message})`;
-            slide.style.backgroundSize = 'cover';
-            slide.style.backgroundPosition = 'center';
-            console.log('Background image set for slide:', slide.id);
+            const imgUrl = data.message;
+            
+            // Create a new image element to use with Vibrant
+            const img = new Image();
+            img.crossOrigin = 'Anonymous'; // Handle CORS issues
+            img.src = imgUrl;
+
+            img.onload = () => {
+                // Set background image
+                slide.style.backgroundImage = `url(${imgUrl})`;
+                slide.style.backgroundSize = 'cover';
+                slide.style.backgroundPosition = 'center';
+
+                // Create a new Vibrant instance
+                Vibrant.from(img).getPalette((err, palette) => {
+                    if (err) {
+                        console.error('Error getting palette:', err);
+                        return;
+                    }
+
+                    const lightVibrant = palette.lightVibrant || palette.vibrant;
+                    const textColor = getContrastingColor(lightVibrant.getHex());
+
+                    // Adjust styles based on dominant color
+                    slide.querySelectorAll('h1, p, button, .question, .answer, .feedback').forEach(element => {
+                        element.style.color = textColor;
+                        if (element.tagName === 'BUTTON') {
+                            element.style.backgroundColor = textColor === 'black' ? 'white' : 'rgba(0, 0, 0, 0.7)';
+                            element.style.border = `1px solid ${textColor}`;
+                        }
+                    });
+                    console.log('Background image set for slide:', slide.id);
+                });
+            };
         } catch (error) {
             console.error('Error fetching dog image:', error);
         }
     }
+}
+
+// Utility function to get contrasting color (black or white)
+function getContrastingColor(hex) {
+    const rgb = parseInt(hex.slice(1), 16); // Convert hex to RGB
+    const r = (rgb >> 16) & 0xff;
+    const g = (rgb >>  8) & 0xff;
+    const b = (rgb >>  0) & 0xff;
+    const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+    return brightness > 128 ? 'black' : 'white';
 }
