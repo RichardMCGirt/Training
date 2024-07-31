@@ -301,6 +301,7 @@ function drawHangman() {
     console.log("Hangman display updated");
 }
 
+// Update the makeGuess function to show the Next button and handle transitions
 function makeGuess() {
     const input = document.getElementById('guess-input');
     const feedback = document.getElementById('hangman-feedback');
@@ -336,13 +337,22 @@ function makeGuess() {
 
     if (attempts === 0) {
         feedback.textContent = `Game Over! The word was: ${currentWord}`;
-        document.getElementById('next').style.display = 'block';
+        document.getElementById('next').style.display = 'block'; // Show the next button
     } else if (!document.getElementById('hangman-container').textContent.includes('_')) {
         feedback.textContent = "Congratulations! You've guessed the word!";
-        document.getElementById('next').style.display = 'block';
+        document.getElementById('next').style.display = 'block'; // Show the next button
     }
     console.log("Guess made:", guess);
 }
+
+// Add event listener to the Next button
+document.getElementById('next').addEventListener('click', function() {
+    nextSlide(); // Go to the next question
+});
+
+// Ensure the Next button is hidden initially
+document.getElementById('next').style.display = 'none';
+
 
 // Additional mini-games inspired by the suggested site
 function setupMiniGame1() {

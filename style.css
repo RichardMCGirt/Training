@@ -7,6 +7,7 @@ body {
     margin: 0;
     background-color: #f0f0f0;
     padding-top: 20px;
+    color: white;
 }
 
 #app, #homepage {
@@ -128,7 +129,7 @@ select:hover {
 .hangman .gallows {
     width: 10px;
     height: 200px;
-    background: black;
+    background: grey;
     position: relative;
 }
 
@@ -136,14 +137,14 @@ select:hover {
     content: '';
     width: 100px;
     height: 10px;
-    background: black;
+    background: grey;
     position: absolute;
     top: 0;
     left: -90px;
 }
 
 .hangman .head, .hangman .body, .hangman .left-arm, .hangman .right-arm, .hangman .left-leg, .hangman .right-leg {
-    background: black;
+    background: white;
     position: absolute;
     visibility: hidden;
 }
@@ -153,19 +154,21 @@ select:hover {
     height: 40px;
     border-radius: 50%;
     top: 10px;
+    left: 300px;
 }
 
 .hangman .body {
     width: 10px;
     height: 80px;
     top: 50px;
+    left: 315px;
 }
 
 .hangman .left-arm {
     width: 10px;
     height: 50px;
     top: 60px;
-    left: 350px;
+    left: 270px;
     transform: rotate(-45deg);
     transform-origin: top right;
 }
@@ -173,8 +176,8 @@ select:hover {
 .hangman .right-arm {
     width: 10px;
     height: 50px;
-    top: 60px;
-    left: 417px;
+    top: 120px;
+    left: 313px;
     transform: rotate(45deg);
     transform-origin: top left;
 }
@@ -182,9 +185,10 @@ select:hover {
 .hangman .left-leg {
     width: 10px;
     height: 50px;
-    top: 190px;
+    top: 120px;
     transform: rotate(-45deg);
     transform-origin: top right;
+    left: 315px;
 }
 
 .hangman .right-leg {
