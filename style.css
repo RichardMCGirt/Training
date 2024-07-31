@@ -8,20 +8,24 @@ body {
     background-color: #f0f0f0;
 }
 
-#app {
+#app, #homepage {
     background: white;
     padding: 20px;
     box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
     width: 80%;
     max-width: 800px;
+    text-align: center;
 }
 
 .slide {
     display: none;
+    background-size: cover;
 }
 
 .slide.active {
     display: block;
+    transition: opacity 0.5s;
+    opacity: 1;
 }
 
 button {
@@ -31,6 +35,8 @@ button {
     color: white;
     border: none;
     cursor: pointer;
+    border-radius: 5px;
+    transition: background-color 0.3s;
 }
 
 button:hover {
@@ -54,6 +60,35 @@ button:hover {
     margin: 10px 0;
     cursor: pointer;
     border-radius: 5px;
+    transition: background 0.3s;
+}
+
+.question.selected, .answer.selected {
+    background: #0056b3;
+}
+
+.question.correct, .answer.correct {
+    background: green;
+    animation: correctPulse 0.5s;
+}
+
+.question.incorrect, .answer.incorrect {
+    background: red;
+    animation: incorrectShake 0.5s;
+}
+
+@keyframes correctPulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.1); }
+    100% { transform: scale(1); }
+}
+
+@keyframes incorrectShake {
+    0% { transform: translateX(0); }
+    25% { transform: translateX(-5px); }
+    50% { transform: translateX(5px); }
+    75% { transform: translateX(-5px); }
+    100% { transform: translateX(0); }
 }
 
 .svg-overlay {
@@ -65,9 +100,90 @@ button:hover {
     pointer-events: none;
 }
 
+.hangman {
+    position: relative;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    margin-top: 20px;
+}
+
+.hangman .gallows {
+    width: 10px;
+    height: 200px;
+    background: black;
+    position: relative;
+}
+
+.hangman .gallows::before {
+    content: '';
+    width: 100px;
+    height: 10px;
+    background: black;
+    position: absolute;
+    top: 0;
+    left: -90px;
+}
+
+.hangman .head, .hangman .body, .hangman .left-arm, .hangman .right-arm, .hangman .left-leg, .hangman .right-leg {
+    background: black;
+    position: absolute;
+    visibility: hidden;
+}
+
+.hangman .head {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    top: 10px;
+}
+
+.hangman .body {
+    width: 10px;
+    height: 80px;
+    top: 50px;
+}
+
+.hangman .left-arm {
+    width: 10px;
+    height: 50px;
+    top: 60px;
+    left: -30px;
+    transform: rotate(-45deg);
+    transform-origin: top right;
+}
+
+.hangman .right-arm {
+    width: 10px;
+    height: 50px;
+    top: 60px;
+    left: 30px;
+    transform: rotate(45deg);
+    transform-origin: top left;
+}
+
+.hangman .left-leg {
+    width: 10px;
+    height: 50px;
+    top: 130px;
+    left: -20px;
+    transform: rotate(-45deg);
+    transform-origin: top right;
+}
+
+.hangman .right-leg {
+    width: 10px;
+    height: 50px;
+    top: 130px;
+    left: 20px;
+    transform: rotate(45deg);
+    transform-origin: top left;
+}
+
 .feedback {
     margin-top: 10px;
     font-weight: bold;
+    transition: color 0.3s;
 }
 
 .feedback.correct {
