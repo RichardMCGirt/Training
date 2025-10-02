@@ -1,150 +1,133 @@
-// auto-load.js (verbose logging edition)
+// auto-load.js (BFCache + cache-bust + idempotent)
 // Fills the Slides ID and triggers the same flow you proved in console.
-// Safe against early execution (waits for DOM + elements). No other dependencies.
 
 (function(){
   "use strict";
 
-  /***********************
-   * CONFIG + DEBUG TOOLS
-   ***********************/
   const SLIDES_ID = "1lsNam3OMuol_lxdplqXKQJ57D8m2ZHUaGxdmdx2uwEQ";
-  // Flip this to true to always log; or call window.setAutoLoadDebug(true)
-  let DEBUG = true;
   const TAG = "[auto-load]";
+  let running = false;                 // prevents re-entrancy while in-flight
+  let hasRunThisShow = false;          // prevents double-run per pageshow
 
-  // Lightweight logger with a consistent prefix + timestamp
-  function ts(){ return new Date().toISOString().replace("T"," ").replace("Z",""); }
-  function log(...a){ if (DEBUG) console.log(TAG, ts(), ...a); }
-  function info(...a){ if (DEBUG) console.info(TAG, ts(), ...a); }
-  function warn(...a){ if (DEBUG) console.warn(TAG, ts(), ...a); }
-  function error(...a){ if (DEBUG) console.error(TAG, ts(), ...a); }
+  log("init");
 
-  // Expose a quick toggle in console: setAutoLoadDebug(true/false)
-  window.setAutoLoadDebug = function(v){ DEBUG = !!v; log("DEBUG =", DEBUG); };
+  // 1) Run on first parse
+  whenReady(runOnce);
 
-  // Expose quick re-run helper in console
-  window.forceSlidesLoad = async function(){
-    log("forceSlidesLoad() called");
-    try {
-      await coreRun(/*reRun=*/true);
-      log("forceSlidesLoad() completed.");
-    } catch (e) {
-      error("forceSlidesLoad() failed:", e);
-    }
-  };
+  // 2) ALSO run on BFCache restores (e.g., back button, history nav)
+  window.addEventListener("pageshow", (ev) => {
+    const navEntries = performance.getEntriesByType("navigation");
+    const navType = navEntries && navEntries[0] ? navEntries[0].type : "(unknown)";
+    log("pageshow", { persisted: ev.persisted, navType });
 
-  /***********************
-   * ENTRY
-   ***********************/
-  (async function main(){
-    console.groupCollapsed(`${TAG} start`);
-    const t0 = performance.now();
-    try {
-      await coreRun(/*reRun=*/false);
-      const dt = (performance.now() - t0).toFixed(1);
-      info("Done in", dt, "ms");
-    } catch (e) {
-      error("Fatal error:", e);
-    } finally {
-      console.groupEnd();
-    }
-  })();
-
-  /***********************
-   * CORE LOGIC
-   ***********************/
-  async function coreRun(reRun){
-    const phase = reRun ? "rerun" : "first-run";
-    info(`Phase: ${phase}`);
-
-    // 1) Wait for DOM
-    if (document.readyState === "loading") {
-      info("DOM not ready, waiting for DOMContentLoaded…");
-      await new Promise(r => document.addEventListener("DOMContentLoaded", r, { once: true }));
-      info("DOMContentLoaded fired.");
-    } else {
-      info("DOM already ready:", document.readyState);
-    }
-
-    // 2) Wait for elements
-    const ids = ["presentationId","btnLoad"];
-    const exists = () => ids.map(id => [id, document.getElementById(id)]);
-    const hasAll = pairs => pairs.every(([, el]) => !!el);
-
-    let tries = 0, got;
-    const maxTries = 50, delayMs = 100;
-    while (tries++ < maxTries) {
-      got = exists();
-      if (hasAll(got)) break;
-      if (tries === 1 || tries % 10 === 0) log(`Waiting for elements… try ${tries}/${maxTries}`);
-      await sleep(delayMs);
-    }
-
-    const dict = Object.fromEntries(got || []);
-    const input = dict.presentationId;
-    const btn   = dict.btnLoad;
-
-    if (!input || !btn) {
-      warn("Missing elements after waiting:", {
-        hasInput: !!input,
-        hasButton: !!btn
-      });
-      throw new Error("Missing #presentationId or #btnLoad");
-    }
-    info("Elements ready:", { input, btn });
-
-    // 3) Fill like a real user
-    try { input.focus(); } catch {}
-    input.value = SLIDES_ID;
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    input.dispatchEvent(new Event("change", { bubbles: true }));
-    log("Filled Slides ID.");
-
-    // 4) Submit (prefer form.submit path), else click
-    const form = input.form || document.querySelector("form");
-    if (form) {
-      info("Form detected. Using requestSubmit if available.", form);
-      if (typeof form.requestSubmit === "function") {
-        form.addEventListener("submit", submitLogger, { once: true, capture: true });
-        form.requestSubmit(btn);
-        log("requestSubmit() called with btn as submitter.");
+    // some browsers set persisted=true; others report navType "back_forward"
+    if (ev.persisted || navType === "back_forward") {
+      if (!hasRunThisShow) {
+        hasRunThisShow = true;
+        runOnce("pageshow");
       } else {
-        form.addEventListener("submit", submitLogger, { once: true, capture: true });
-        const ok = form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-        log("Manual submit dispatch returned:", ok);
-        if (ok && btn) {
-          btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-          log("Clicked button as fallback after submit event.");
-        }
+        log("pageshow ignored (already ran this show).");
       }
     } else {
-      info("No form detected. Clicking button directly.");
-      btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-      log("Dispatched MouseEvent('click') on #btnLoad.");
+      hasRunThisShow = false; // normal navigation; allow future run
     }
+  });
 
-    // 5) Optional: minimal post-check (if your app sets any known state/label)
-    // Customize these selectors/texts to your app for better feedback.
-    setTimeout(() => {
-      const status = document.getElementById("loadStatus");
-      const counter = document.getElementById("counter");
-      if (status) log("loadStatus text:", status.textContent || "(empty)");
-      if (counter) log("counter text:", counter.textContent || "(empty)");
-    }, 600);
+  // Optional: console helper to force a re-run
+  window.forceSlidesLoad = () => runOnce("manual");
+
+  async function runOnce(origin="first-load"){
+    if (running) { log("runOnce skipped (already running)", { origin }); return; }
+    running = true;
+    console.groupCollapsed(`${TAG} run (${origin})`);
+    try {
+      // If your app constructs the GAS URL using a global, monkey-patch a cache-bust hook.
+      // (Safe no-op if not present.)
+      tryAttachCacheBuster();
+
+      // Wait for DOM + elements (handles SPA-delayed DOM as well)
+      await ensureElements(["presentationId","btnLoad"]);
+      const input = document.getElementById("presentationId");
+      const btn   = document.getElementById("btnLoad");
+
+      // Fill like a real user
+      try { input.focus(); } catch {}
+      input.value = SLIDES_ID;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      log("Filled Slides ID");
+
+      // Prefer form submit if present; otherwise click the button
+      const form = input.form || document.querySelector("form");
+      if (form && typeof form.requestSubmit === "function") {
+        form.requestSubmit(btn);
+        log("requestSubmit() fired");
+      } else if (form) {
+        const ok = form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+        if (ok) btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+        log("submit event + click fallback fired");
+      } else {
+        btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+        log("direct click fired");
+      }
+    } catch (e) {
+      console.error(TAG, "run failed:", e);
+    } finally {
+      console.groupEnd();
+      running = false;
+    }
   }
 
-  function submitLogger(ev){
-    log("Form submit intercepted:", {
-      type: ev.type,
-      defaultPrevented: ev.defaultPrevented,
-      target: ev.target
-    });
+  function whenReady(fn){
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", fn, { once: true });
+    } else {
+      // Even if DOM is "complete", SPAs may still be hydrating—delay a tick
+      setTimeout(fn, 0);
+    }
   }
 
-  /***********************
-   * UTILS
-   ***********************/
+  async function ensureElements(ids, tries=60, interval=100){
+    for (let i=0; i<tries; i++){
+      const all = ids.map(id => document.getElementById(id));
+      if (all.every(Boolean)) return;
+      if (i===0 || (i+1)%10===0) log("waiting for elements…", { try: i+1 });
+      await sleep(interval);
+    }
+    throw new Error("Required elements not found: " + ids.join(", "));
+  }
+
+  // Adds a timestamp param to GAS requests if your app exposes a builder.
+  // If not applicable, harmlessly does nothing.
+  function tryAttachCacheBuster(){
+    // Example: if your app uses a global GAS_ENDPOINT variable and fetches like:
+    // fetch(`${GAS_ENDPOINT}?presentationId=...&size=LARGE`)
+    // this override adds &_cb=TIMESTAMP automatically.
+    try {
+      const origFetch = window.fetch;
+      if (!origFetch || origFetch.__autoLoadPatched) return;
+
+      window.fetch = function(input, init){
+        try {
+          let url = (typeof input === "string") ? input : (input && input.url);
+          if (typeof url === "string" && url.includes("script.google.com/macros") && url.includes("?")) {
+            const sep = url.includes("_cb=") ? "" : `&${new URLSearchParams({ _cb: Date.now() }).toString()}`;
+            const bumped = url + sep;
+            if (typeof input === "string") input = bumped;
+            else if (input && input.url) input = new Request(bumped, input);
+            log("cache-bust added to GAS url");
+          }
+        } catch(_) {}
+        return origFetch.apply(this, arguments);
+      };
+      window.fetch.__autoLoadPatched = true;
+      log("fetch cache-buster attached");
+    } catch (e) {
+      // ignore
+    }
+  }
+
   function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+  function log(msg, extra){ try{ console.log(TAG, msg, extra||""); }catch{} }
 
 })();
