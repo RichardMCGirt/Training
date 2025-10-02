@@ -1,40 +1,22 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Slides Training (Serverless)</title>
-<style>
-  :root{--bg:#0b1020;--card:#11193a;--muted:#9aa4c7;--text:#eaf0ff;--accent:#4cc9f0;--ok:#2dd4bf;--warn:#f59e0b;--bad:#ef4444;--r:14px}
-  body{margin:0;background:linear-gradient(180deg,#050814,#0b1020);color:var(--text);font:16px/1.4 system-ui,Segoe UI,Roboto}
-  .wrap{max-width:1100px;margin:0 auto;padding:22px}
-  header{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}
-  .title{font-weight:700}
-  .row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
-  input,select{padding:10px;border-radius:10px;border:1px solid #2b3564;background:#0b1430;color:#eaf0ff}
-  .btn{border:1px solid #2b3564;background:#0e1736;color:#eaf0ff;padding:10px 14px;border-radius:10px;cursor:pointer}
-  .grid{display:grid;grid-template-columns:1.1fr .9fr;gap:14px}
-  .card{background:linear-gradient(180deg,#0f1840,#0d1535);border:1px solid #1b2659;border-radius:var(--r);overflow:hidden}
-  .card h3{margin:0;padding:10px 14px;border-bottom:1px solid #22306b;background:#101b46}
-  .stage{display:flex;align-items:center;justify-content:center;height:520px;padding:12px}
-  .stage img{max-width:100%;max-height:100%;border-radius:12px;border:1px solid #233072;background:#0a1330}
-  .controls{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 14px;border-top:1px solid #22306b;background:#0e1739}
-  .muted{color:var(--muted)} .ok{color:var(--ok)} .warn{color:var(--warn)} .bad{color:var(--bad)}
-  .qbox{padding:12px 14px;display:flex;flex-direction:column;gap:10px}
-  .opt{display:flex;gap:8px;align-items:flex-start;padding:8px 10px;border:1px solid #2b3564;border-radius:10px;background:#0b1430}
-  .pill{border:1px solid #2b3564;border-radius:999px;padding:6px 10px;background:#0d1736}
-  .progress{height:8px;background:#0a1330}
-  .bar{height:8px;width:0%;background:linear-gradient(90deg,var(--accent),#7c3aed);transition:width .25s}
-  .hidden{display:none !important}
-  @media (max-width:980px){.grid{grid-template-columns:1fr}}
-</style>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Slides Training (Auto-Type + Fallback)</title>
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<div id="notice" class="notice notice-info">
+  <div class="notice-text" id="noticeText">Preparing to load deck…</div>
+  <button id="retryBtn" class="btn btn-ghost" title="Try again" style="display:none">Retry</button>
+</div>
+
 <div class="wrap">
   <header>
-    <div class="title">Diana's wonderful Training</div>
+    <div class="title">Diana’s Wonderful Training</div>
     <div class="row">
-      <span class="muted"></span>
+      <span class="muted">ID will type itself, then load automatically.</span>
     </div>
   </header>
 
@@ -42,7 +24,10 @@
     <div class="qbox">
       <div class="row">
         <label for="presentationId"><strong>Slides Presentation ID</strong></label>
-        <input id="presentationId" placeholder="1AbCdEfGh... (from Slides URL)" style="width:360px"/>
+        <div class="type-wrap">
+          <input id="presentationId" autocomplete="off" spellcheck="false" placeholder="Paste a Google Slides ID…"/>
+          <span class="caret" aria-hidden="true"></span>
+        </div>
         <button id="btnLoad" class="btn">Load deck</button>
         <span id="loadStatus" class="muted"></span>
       </div>
@@ -55,8 +40,8 @@
 
   <div class="grid">
     <section class="card">
-      <h3>Slides</h3>
-      <div class="stage" id="stage"><div class="muted">Load a deck to begin.</div></div>
+      <h3>Slides (Thumbnails view)</h3>
+      <div class="stage" id="stage"><div class="muted">Waiting for deck to load…</div></div>
       <div class="controls">
         <div class="row">
           <button id="prevBtn" class="btn" disabled>&larr; Prev</button>
@@ -83,186 +68,18 @@
       </div>
     </aside>
   </div>
+
+  <div class="card" id="embedCard" style="margin-top:14px; display:none;">
+    <h3 style="margin:0;padding:10px 14px;border-bottom:1px solid #22306b;background:#101b46">Slides (Live embed fallback)</h3>
+    <div style="position:relative;padding:12px">
+      <iframe id="slidesEmbed" title="Slides Embed" width="100%" height="520" frameborder="0" allowfullscreen style="border:1px solid #233072;border-radius:12px;background:#0a1330;"></iframe>
+      <div id="embedHint" class="muted" style="margin-top:8px">Using live embed because thumbnail service was unavailable.</div>
+    </div>
+  </div>
 </div>
 
-<script>
-(async function(){
-  "use strict";
+<script src="script.js" defer></script>
+<script src="auto-load.js" defer></script>
 
-  /* ====== YOUR ENDPOINTS (already filled) ====== */
-  const GAS_ENDPOINT = "https://script.google.com/macros/s/AKfycbynA16QEmTI6WcNG9rhlsJt68iUD3pO3dlCB_vuzxw0bniN2qAlzu-K-EXlmtMVQCHuBA/exec";
-  const AIRTABLE_WEBHOOK_URL = "https://hooks.airtable.com/workflows/v1/genericWebhook/app3rkuurlsNa7ZdQ/wfl42Z7YQTcn5WB2O/wtrfVqhBdGdz5YD6S";
-
-  /* Map questions to slide index (0-based).
-     Start with one sample question for slide 1 to verify end-to-end. */
-  const QUIZ_BY_INDEX = {
-    0: {
-      questionId: "q1_intro",
-      question: "Did you view the first slide?",
-      options: ["Yes","No"],
-      correct: "Yes",
-      required: true
-    }
-    // Add more: 2:{questionId:"q3",question:"...",options:["A","B"],correct:"A",required:false}
-  };
-
-  const el = {
-    pres: document.getElementById("presentationId"),
-    btnLoad: document.getElementById("btnLoad"),
-    loadStatus: document.getElementById("loadStatus"),
-    stage: document.getElementById("stage"),
-    prevBtn: document.getElementById("prevBtn"),
-    nextBtn: document.getElementById("nextBtn"),
-    counter: document.getElementById("counter"),
-    bar: document.getElementById("bar"),
-    quizBox: document.getElementById("quizBox"),
-    btnSubmit: document.getElementById("btnSubmit"),
-    saveStatus: document.getElementById("saveStatus"),
-    userEmail: document.getElementById("userEmail")
-  };
-
-  const state = {
-    presentationId: "",
-    slides: [], // [{objectId,title,thumbUrl}]
-    i: 0,
-    answers: {} // questionId -> {answer,isCorrect}
-  };
-
-  el.btnLoad.addEventListener("click", onLoadDeck);
-  el.prevBtn.addEventListener("click", ()=> go(-1));
-  el.nextBtn.addEventListener("click", ()=> go(+1));
-  el.btnSubmit.addEventListener("click", submitAnswer);
-  document.addEventListener("keydown", (e)=>{
-    if (e.key === "ArrowLeft") go(-1);
-    if (e.key === "ArrowRight") go(+1);
-  });
-
-  async function onLoadDeck(){
-    const pid = (el.pres.value||"").trim();
-    if (!pid) return setLoad("Enter a presentation ID.", true);
-    setLoad("Loading slides…");
-    try{
-      const r = await fetch(`${GAS_ENDPOINT}?`+new URLSearchParams({presentationId: pid, size:"LARGE"}));
-      const j = await r.json();
-      if (!j.ok) throw new Error(j.error||"Failed");
-      state.presentationId = pid;
-      state.slides = j.slides || [];
-      state.i = 0;
-      render();
-      setLoad(`Loaded ${state.slides.length} slides.`);
-    }catch(err){
-      console.error(err);
-      setLoad(`Failed: ${err.message||err}`, true);
-    }
-  }
-
-  function render(){
-    const total = state.slides.length;
-    const i = clamp(state.i, 0, Math.max(0,total-1));
-    state.i = i;
-
-    if (!total){
-      el.stage.innerHTML = `<div class="muted">No slides.</div>`;
-      el.prevBtn.disabled = true;
-      el.nextBtn.disabled = true;
-      el.counter.textContent = "0 / 0";
-      el.bar.style.width = "0%";
-      renderQuiz(null);
-      return;
-    }
-
-    const s = state.slides[i];
-    el.stage.innerHTML = `<img alt="${esc(s.title)}" src="${s.thumbUrl}">`;
-    el.counter.textContent = `${i+1} / ${total}`;
-    el.bar.style.width = Math.round(((i+1)/total)*100)+"%";
-    el.prevBtn.disabled = (i<=0);
-    el.nextBtn.disabled = (i>=total-1);
-
-    const quiz = QUIZ_BY_INDEX[i] || null;
-    renderQuiz(quiz);
-  }
-
-  function renderQuiz(quiz){
-    if (!quiz){
-      el.quizBox.innerHTML = `<div class="muted">No question for this slide.</div>`;
-      el.btnSubmit.disabled = true;
-      return;
-    }
-    const selected = (state.answers[quiz.questionId]?.answer) || "";
-    const opts = (quiz.options||[]).map(o=>{
-      const checked = (o===selected) ? "checked" : "";
-      return `<label class="opt">
-        <input type="radio" name="opt" value="${att(o)}" ${checked}/>
-        <div><strong>${esc(o)}</strong></div>
-      </label>`;
-    }).join("");
-    el.quizBox.innerHTML = `
-      <div><strong>${esc(quiz.question)}</strong> ${quiz.required ? `<span class="pill">Required</span>`:""}</div>
-      <div>${opts || `<div class="muted">No options set.</div>`}</div>
-    `;
-    el.btnSubmit.disabled = !(quiz.options && quiz.options.length);
-    el.saveStatus.textContent = "";
-  }
-
-  function go(delta){
-    const quiz = QUIZ_BY_INDEX[state.i];
-    if (quiz && quiz.required) {
-      const cur = getChoice();
-      const has = !!(state.answers[quiz.questionId]?.answer);
-      if (!cur && !has) {
-        return pulse("Answer required before continuing.", "warn");
-      }
-    }
-    state.i = clamp(state.i + delta, 0, state.slides.length-1);
-    render();
-  }
-
-  function getChoice(){
-    const x = document.querySelector('input[name="opt"]:checked');
-    return x ? x.value : "";
-  }
-
-  async function submitAnswer(){
-    const slide = state.slides[state.i];
-    const quiz = QUIZ_BY_INDEX[state.i];
-    if (!quiz) return;
-    const answer = getChoice();
-    if (!answer) return pulse("Choose an option.", "warn");
-    const isCorrect = quiz.correct ? (answer.trim() === quiz.correct.trim()) : false;
-
-    state.answers[quiz.questionId] = { answer, isCorrect };
-
-    try{
-      const payload = {
-        userEmail: (el.userEmail.value||"").trim(),
-        presentationId: state.presentationId,
-        slideId: slide.objectId,
-        questionId: quiz.questionId,
-        answer,
-        isCorrect,
-        timestamp: new Date().toISOString()
-      };
-      const r = await fetch(AIRTABLE_WEBHOOK_URL, {
-        method:"POST",
-        headers:{ "Content-Type":"application/json" },
-        body: JSON.stringify(payload)
-      });
-      if (!r.ok) throw new Error("Webhook failed: "+r.status);
-      pulse(isCorrect ? "Saved ✓ (correct)":"Saved ✓", isCorrect ? "ok" : "");
-    }catch(err){
-      console.error(err);
-      pulse("Save failed. " + (err.message||""), "bad");
-    }
-  }
-
-  /* utils */
-  function setLoad(msg, bad){ el.loadStatus.textContent = msg; el.loadStatus.className = bad ? "bad" : "muted"; }
-  function pulse(msg, cls){ el.saveStatus.textContent = msg; el.saveStatus.className = (cls?cls+" ":"")+"muted"; setTimeout(()=>{ el.saveStatus.textContent=""; el.saveStatus.className="muted"; }, 2000); }
-  function clamp(n,a,b){ return Math.max(a, Math.min(b, n)); }
-  function esc(s){ return String(s||"").replace(/[&<>"']/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m])); }
-  function att(s){ return esc(s).replace(/"/g,"&quot;"); }
-
-})();
-</script>
 </body>
 </html>
