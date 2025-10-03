@@ -1,6 +1,6 @@
 /* ---------- Config (must be first) ---------- */
 // Your published Web App URL (the /exec one)
-const GAS_ENDPOINT = "https://script.google.com/macros/s/AKfycbze3lvYA918QbvTBAMrANvffQfFMvhTb-oQRT-JSQGBd9ifdv8-NHV7iFZ9c8gT2quglA/exec";
+const GAS_ENDPOINT = "https://script.google.com/macros/s/AKfycby9d3L18bAVmlw05Y7HwTwBLPcwR0b_1TmVmZcgfvTaZE6anMwfIGxhuQFMkZuh2QD-Bw/exec";
 
 const PRESENTATION_ID = "1lsNam3OMuol_lxdplqXKQJ57D8m2ZHUaGxdmdx2uwEQ";
 
@@ -45,79 +45,56 @@ function jsonp(url, params = {}) {
     const cb = `__jsonp_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     params.callback = cb;
     const qs = new URLSearchParams(params).toString();
-
     const tag = document.createElement("script");
     tag.src = `${url}${url.includes("?") ? "&" : "?"}${qs}`;
     tag.async = true;
 
     let done = false;
-    window[cb] = (data) => {
-      if (done) return;
-      done = true;
-      cleanup();
-      resolve(data);
-    };
+    window[cb] = (data) => { if (!done) { done = true; cleanup(); resolve(data); } };
     tag.onerror = () => { if (!done) { done = true; cleanup(); reject(new Error("JSONP network error")); } };
-
     document.head.appendChild(tag);
 
-    function cleanup() {
-      delete window[cb];
-      tag.remove();
-    }
+  function cleanup() { delete window[cb]; tag.remove(); }
   });
 }
 function fetchSlideThumbnailThrottled(presentationId, slideId) {
-  if (thumbnailCache.has(slideId)) {
-    return Promise.resolve(thumbnailCache.get(slideId));
-  }
+  if (thumbnailCache.has(slideId)) return Promise.resolve(thumbnailCache.get(slideId));
   return new Promise((resolve, reject) => {
     thumbQueue.push({ presentationId, slideId, resolve, reject });
     processThumbQueue();
   });
 }
 
-
-
-
 function processThumbQueue() {
   if (thumbBusy || thumbQueue.length === 0) return;
   thumbBusy = true;
 
   const { presentationId, slideId, resolve, reject } = thumbQueue.shift();
-
-  // Guarded callbacks so we never crash if an entry lacks them
   const onResolve = typeof resolve === "function" ? resolve : () => {};
-  const onReject  = typeof reject  === "function" ? reject  : (e) => {
-    console.warn("Thumb fetch failed (no consumer)", slideId, e);
-  };
+  const onReject  = typeof reject  === "function" ? reject  : (e) => console.warn("thumb error (no consumer)", e);
 
   jsonp(GAS_ENDPOINT, {
-    mode: "thumbnail",
-    presentationId,
+    mode: "thumbnailData",           // <— IMPORTANT: ask for data URL
+    presentationId: presentationId,
     pageObjectId: slideId
   })
   .then(data => {
-    if (!data || data.ok !== true || !data.thumbUrl) {
-      throw new Error((data && data.error) || "No thumbnail");
-    }
-    thumbnailCache.set(slideId, data.thumbUrl);
-    onResolve(data.thumbUrl);
+    if (!data || data.ok !== true || !data.dataUrl) throw new Error((data && data.error) || "No dataUrl");
+    thumbnailCache.set(slideId, data.dataUrl);
+    onResolve(data.dataUrl);
 
-    // If this is the current slide, re-render
+    // if current slide, re-render to show the image
     if (state.slides[state.i] && state.slides[state.i].objectId === slideId) {
-      state.slides[state.i].thumbUrl = data.thumbUrl;
+      state.slides[state.i].thumbUrl = data.dataUrl;
       render();
     }
   })
   .catch(err => {
     const msg = String(err && err.message || "");
     if (/quota|rate|429|RESOURCE_EXHAUSTED/i.test(msg)) {
-      // Back off and REQUEUE with the SAME callbacks
       thumbDelayMs = Math.min(MAX_BACKOFF, Math.max(BASE_BACKOFF, Math.round(thumbDelayMs * 1.5)));
-      console.warn("Quota hit; backing off to", thumbDelayMs, "ms for", slideId);
       thumbQueue.push({ presentationId, slideId, resolve: onResolve, reject: onReject });
-      // Important: don’t call onReject here; we’ll try again later
+      console.warn("Quota/backoff ->", thumbDelayMs, "ms");
     } else {
       onReject(err);
     }
@@ -127,10 +104,6 @@ function processThumbQueue() {
     setTimeout(processThumbQueue, thumbDelayMs);
   });
 }
-
-
-
-
 
 /* ---------- Quiz mapping (expand as needed) ---------- */
 const QUIZ_BY_INDEX = {
@@ -292,9 +265,10 @@ function embedFallback(pid, reason) {
 /* ---------- Rendering (on-demand thumbnails) ---------- */
 function render() {
   const total = state.slides.length;
-  const i = Math.max(0, Math.min(state.i, total - 1));
+  const i = clamp(state.i, 0, Math.max(0, total - 1));
   state.i = i;
 
+  // controls / progress
   if (!total) {
     el.stage.innerHTML = `<div class="muted">No thumbnails available.</div>`;
     el.prevBtn.disabled = true;
@@ -304,34 +278,49 @@ function render() {
     renderQuiz(null);
     return;
   }
-
-  const s = state.slides[i];
-  const cached = thumbnailCache.get(s.objectId);
-  if (cached) {
-    s.thumbUrl = cached;
-    el.stage.innerHTML = `<img alt="${esc(s.title)}" src="${cached}">`;
-  } else if (s.thumbUrl) {
-    el.stage.innerHTML = `<img alt="${esc(s.title)}" src="${s.thumbUrl}">`;
-  } else {
-    el.stage.innerHTML = `<div class="muted">Loading thumbnail...</div>`;
-    queueThumb(state.presentationId, s.objectId);
-    processThumbQueue();
-  }
-
-  el.counter.textContent = `${i + 1} / ${total}`;
-  el.bar.style.width = Math.round(((i + 1) / total) * 100) + "%";
   el.prevBtn.disabled = (i <= 0);
   el.nextBtn.disabled = (i >= total - 1);
+  el.counter.textContent = `${i + 1} / ${total}`;
+  el.bar.style.width = Math.round(((i + 1) / total) * 100) + "%";
 
-  // prefetch next slide
-  const next = state.slides[i + 1];
-  if (next && !thumbnailCache.has(next.objectId)) {
-    queueThumb(state.presentationId, next.objectId);
-    processThumbQueue();
+  const s = state.slides[i];
+
+  // prefer cached → already-fetched url → else load
+  const cached = thumbnailCache.get(s.objectId);
+  const src = cached || s.thumbUrl || "";
+
+  if (src) {
+    el.stage.innerHTML = `<img alt="${esc(s.title)}" src="${src}" />`;
+  } else {
+    el.stage.innerHTML = `<div class="muted">Loading thumbnail...</div>`;
+    // trigger fetch; when it resolves, update the current slide view
+    fetchSlideThumbnailThrottled(state.presentationId, s.objectId)
+      .then((url) => {
+        s.thumbUrl = url;                 // persist on the slide object
+        if (state.slides[state.i] && state.slides[state.i].objectId === s.objectId) {
+          el.stage.innerHTML = `<img alt="${esc(s.title)}" src="${url}" />`;
+        }
+      })
+      .catch((e) => console.warn("Thumb fetch failed", s.objectId, e));
   }
 
   renderQuiz(QUIZ_BY_INDEX[i] || null);
 }
+
+// Optional: if you still want to explicitly queue from render()
+const inflightThumbs = new Set();
+function queueThumb(presentationId, slideId) {
+  if (thumbnailCache.has(slideId) || inflightThumbs.has(slideId)) return;
+  inflightThumbs.add(slideId);
+  thumbQueue.push({
+    presentationId,
+    slideId,
+    resolve: () => inflightThumbs.delete(slideId),
+    reject:  () => inflightThumbs.delete(slideId)
+  });
+  processThumbQueue();
+}
+
 
 function renderQuiz(quiz) {
   if (!quiz) {
