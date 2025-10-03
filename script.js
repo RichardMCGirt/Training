@@ -5,7 +5,14 @@ const AIRTABLE_BASE_ID = "app3rkuurlsNa7ZdQ";
 const AIRTABLE_TABLE   = "tblkz5HyZGpgO093S";
 const AIRTABLE_WEBHOOK_URL = "https://hooks.airtable.com/workflows/v1/genericWebhook/app3rkuurlsNa7ZdQ/wfl42Z7YQTcn5WB2O/wtrfVqhBdGdz5YD6S";
 let active = 0;                   // used by schedule() to count in-flight jobs
+const AIRTABLE_BASE_URL = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(AIRTABLE_TABLE)}`;
 
+function airtableHeaders() {
+  return {
+    "Authorization": `Bearer ${AIRTABLE_API_KEY}`,
+    "Content-Type": "application/json"
+  };
+}
 let thumbDelayMs = 350;     // was 1500 — start much faster
 const BASE_BACKOFF = 1500;  // was 6000 — recover quicker after 429s
 const MAX_BACKOFF  = 8000;  // was 30000 — cap retries lower
@@ -40,10 +47,63 @@ function saveEmailNow() {
     if (v) localStorage.setItem(EMAIL_STORAGE_KEY, v);
   } catch {}
 }
+async function findRecordIdBySlideAndEmail(slideId, userEmail) {
+  const formula = `AND({Slide ID}='${String(slideId).replaceAll("'", "\\'")}', {UserEmail}='${String(userEmail).replaceAll("'", "\\'")}')`;
+  const url = `${AIRTABLE_BASE_URL}?pageSize=1&filterByFormula=${encodeURIComponent(formula)}`;
 
-// On init (after DOM + el.userEmail exists):
+  const res = await fetch(url, { headers: airtableHeaders() });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Airtable list failed: ${res.status} ${text}`);
+  }
+  const data = await res.json();
+  const rec = (data && Array.isArray(data.records) && data.records[0]) || null;
+  return rec ? rec.id : null;
+}
+async function upsertAirtableBySlideAndEmail(slideId, userEmail, fields) {
+  // Ensure both keys are present on the record itself
+  const safeFields = Object.assign({}, fields, {
+    "Slide ID": slideId,
+    "UserEmail": userEmail
+  });
 
+  const existingId = await findRecordIdBySlideAndEmail(slideId, userEmail);
 
+  if (existingId) {
+    // Update ONLY the record that matches this exact (Slide ID, UserEmail)
+    return await updateAirtableRecord(existingId, safeFields);
+  } else {
+    // Create a brand-new record for this (Slide ID, UserEmail) pair
+    return await createAirtableRecord(safeFields);
+  }
+}
+
+async function createAirtableRecord(fields) {
+  const res = await fetch(AIRTABLE_BASE_URL, {
+    method: "POST",
+    headers: airtableHeaders(),
+    body: JSON.stringify({ records: [{ fields }], typecast: true })
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Airtable create failed: ${res.status} ${text}`);
+  }
+  const data = await res.json();
+  return data && data.records && data.records[0] ? data.records[0].id : null;
+}
+async function updateAirtableRecord(recordId, fields) {
+  const res = await fetch(AIRTABLE_BASE_URL, {
+    method: "PATCH",
+    headers: airtableHeaders(),
+    body: JSON.stringify({ records: [{ id: recordId, fields }], typecast: true })
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Airtable update failed: ${res.status} ${text}`);
+  }
+  const data = await res.json();
+  return data && data.records && data.records[0] ? data.records[0].id : null;
+}
 function schedule() {
   // fill available "slots"
   while (active < MAX_CONCURRENCY && thumbQueue.length) {
@@ -591,15 +651,16 @@ setTimeout(() => {
   let savedOk = false;
   try {
     if (AIRTABLE_API_KEY && AIRTABLE_BASE_ID && AIRTABLE_TABLE) {
-      await upsertAirtableBySlideId(payload.slideId, {
-        PresentationId: payload.presentationId,
-        "Slide ID": payload.slideId,   // keep the space; field must match Airtable column exactly
-        QuestionId: payload.questionId,
-        Answer: payload.answer,
-        IsCorrect: payload.isCorrect,
-        UserEmail: payload.userEmail,
-        Timestamp: payload.timestamp
-      });
+      await upsertAirtableBySlideAndEmail(payload.slideId, payload.userEmail, {
+  PresentationId: payload.presentationId,
+  "Slide ID": payload.slideId,
+  QuestionId: payload.questionId,
+  Answer: payload.answer,
+  IsCorrect: payload.isCorrect,
+  UserEmail: payload.userEmail,
+  Timestamp: payload.timestamp
+});
+
       savedOk = true;
     } else {
       const r = await fetch(AIRTABLE_WEBHOOK_URL, {
