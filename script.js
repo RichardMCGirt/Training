@@ -1,32 +1,115 @@
-/* ---------- Config (must be first) ---------- */
-// Your published Web App URL (the /exec one)
 const GAS_ENDPOINT = "https://script.google.com/macros/s/AKfycby9d3L18bAVmlw05Y7HwTwBLPcwR0b_1TmVmZcgfvTaZE6anMwfIGxhuQFMkZuh2QD-Bw/exec";
-
 const PRESENTATION_ID = "1lsNam3OMuol_lxdplqXKQJ57D8m2ZHUaGxdmdx2uwEQ";
-
 const AIRTABLE_API_KEY = "patTGK9HVgF4n1zqK.cbc0a103ecf709818f4cd9a37e18ff5f68c7c17f893085497663b12f2c600054";
 const AIRTABLE_BASE_ID = "app3rkuurlsNa7ZdQ";
 const AIRTABLE_TABLE   = "tblkz5HyZGpgO093S";
 const AIRTABLE_WEBHOOK_URL = "https://hooks.airtable.com/workflows/v1/genericWebhook/app3rkuurlsNa7ZdQ/wfl42Z7YQTcn5WB2O/wtrfVqhBdGdz5YD6S";
+let active = 0;                   // used by schedule() to count in-flight jobs
 
-let thumbDelayMs = 1500;           // start slower to avoid 429s
-const BASE_BACKOFF = 6000;         // backoff on quota errors
-const MAX_BACKOFF  = 30000;
+let thumbDelayMs = 350;     // was 1500 — start much faster
+const BASE_BACKOFF = 1500;  // was 6000 — recover quicker after 429s
+const MAX_BACKOFF  = 8000;  // was 30000 — cap retries lower
+const MAX_CONCURRENCY = 3;
 let thumbBusy = false;
 const thumbnailCache = new Map();
 const thumbQueue = [];
 const backoffMap = new Map(); // slideId -> delayMs
-
+const backoffBySlide = new Map();
 function queueThumb(presentationId, slideId) {
   if (!slideId) return;
-  if (thumbnailCache.has(slideId)) return;
+  if (thumbnailCache.has(slideId) || inflightThumbs.has(slideId)) return;
+
+  inflightThumbs.add(slideId);
   thumbQueue.push({
     presentationId,
     slideId,
-    resolve: () => {},
-    reject:  () => {},
+    resolve: () => inflightThumbs.delete(slideId),
+    reject:  () => inflightThumbs.delete(slideId)
   });
-  processThumbQueue();
+  schedule();
+}
+/* ---------- Email persistence ---------- */
+const EMAIL_STORAGE_KEY = "trainingUserEmail";
+
+function loadSavedEmail() {
+  try { return localStorage.getItem(EMAIL_STORAGE_KEY) || ""; } catch { return ""; }
+}
+function saveEmailNow() {
+  try {
+    const v = (el.userEmail.value || "").trim();
+    if (v) localStorage.setItem(EMAIL_STORAGE_KEY, v);
+  } catch {}
+}
+
+// On init (after DOM + el.userEmail exists):
+
+
+function schedule() {
+  // fill available "slots"
+  while (active < MAX_CONCURRENCY && thumbQueue.length) {
+    const job = thumbQueue.shift();
+    if (!job || !job.slideId) continue;
+
+    // already cached? resolve and continue
+    if (thumbnailCache.has(job.slideId)) {
+      try { job.resolve?.(thumbnailCache.get(job.slideId)); } finally { inflightThumbs.delete(job.slideId); }
+      continue;
+    }
+
+    active++;
+    runThumbJob(job)
+      .catch(e => {
+        // error handling inside runThumbJob decides requeue/backoff
+        console.warn("thumb job failed:", e?.message || e);
+      })
+      .finally(() => {
+        active--;
+        // small pacing delay to prevent burst → 429
+        setTimeout(schedule, thumbDelayMs);
+      });
+  }
+}
+async function runThumbJob({ presentationId, slideId, resolve, reject }) {
+  try {
+    const data = await jsonp(GAS_ENDPOINT, {
+      mode: "thumbnailData",
+      presentationId,
+      pageObjectId: slideId
+    });
+    if (!data || data.ok !== true || !data.dataUrl) {
+      throw new Error((data && data.error) || "No dataUrl");
+    }
+
+    // cache and resolve
+    thumbnailCache.set(slideId, data.dataUrl);
+    resolve?.(data.dataUrl);
+
+    // if current slide, re-render to swap in image
+    if (state.slides[state.i]?.objectId === slideId) {
+      state.slides[state.i].thumbUrl = data.dataUrl;
+      render();
+    }
+
+    // success: clear per-slide backoff
+    backoffBySlide.delete(slideId);
+  } catch (err) {
+    const msg = String(err?.message || "");
+    const isQuota = /quota|rate|429|RESOURCE_EXHAUSTED/i.test(msg);
+    if (isQuota) {
+      // exponential backoff for this slide
+      const prev = backoffBySlide.get(slideId) ?? BASE_BACKOFF;
+      const next = Math.min(MAX_BACKOFF, Math.max(BASE_BACKOFF, Math.round(prev * 1.5)));
+      backoffBySlide.set(slideId, next);
+
+      // raise global pacing slightly and requeue
+      thumbDelayMs = Math.max(thumbDelayMs, next);
+      thumbQueue.push({ presentationId, slideId, resolve, reject });
+    } else {
+      // hard error -> bubble to caller
+      reject?.(err);
+      inflightThumbs.delete(slideId);
+    }
+  }
 }
 
 function enqueueThumb(presentationId, slideId, { force = false } = {}) {
@@ -36,9 +119,10 @@ function enqueueThumb(presentationId, slideId, { force = false } = {}) {
   const exists = thumbQueue.some(q => q.presentationId === presentationId && q.slideId === slideId);
   if (!exists) {
     thumbQueue.push({ presentationId, slideId });
-    processThumbQueue();
+    schedule();
   }
 }
+
 // JSONP helper (bypasses CORS by using a <script> tag)
 function jsonp(url, params = {}) {
   return new Promise((resolve, reject) => {
@@ -54,14 +138,21 @@ function jsonp(url, params = {}) {
     tag.onerror = () => { if (!done) { done = true; cleanup(); reject(new Error("JSONP network error")); } };
     document.head.appendChild(tag);
 
-  function cleanup() { delete window[cb]; tag.remove(); }
+    function cleanup() { delete window[cb]; tag.remove(); }
   });
 }
+
+
 function fetchSlideThumbnailThrottled(presentationId, slideId) {
-  if (thumbnailCache.has(slideId)) return Promise.resolve(thumbnailCache.get(slideId));
+  if (thumbnailCache.has(slideId)) {
+    return Promise.resolve(thumbnailCache.get(slideId));
+  }
   return new Promise((resolve, reject) => {
+    // avoid duplicate queue entries (but still attach resolvers)
+    const exists = thumbQueue.some(j => j.slideId === slideId);
     thumbQueue.push({ presentationId, slideId, resolve, reject });
-    processThumbQueue();
+    if (!exists) inflightThumbs.add(slideId);
+    schedule();
   });
 }
 
@@ -101,20 +192,83 @@ function processThumbQueue() {
   })
   .finally(() => {
     thumbBusy = false;
-    setTimeout(processThumbQueue, thumbDelayMs);
+    setTimeout(schedule, thumbDelayMs);
   });
 }
 
-/* ---------- Quiz mapping (expand as needed) ---------- */
+/* ---------- Quiz mapping (now full 10 Qs; slide 1..10) ---------- */
 const QUIZ_BY_INDEX = {
-  0: {
-    questionId: "q1_intro",
-    question: "Did you view the first slide?",
-    options: ["Yes", "No"],
-    correct: "Yes",
+  // 0 is your intro/title slide; no question there.
+  1: {
+    questionId: "q1_backcharge",
+    question: "Q1: What field in Airtable is used to store whether a record is Approved or Disputed?",
+    options: ["Job Name","Approved or Dispute","Vendor Amount to Backcharge","Field Technician"],
+    correct: "Approved or Dispute",
+    required: true
+  },
+  2: {
+    questionId: "q2_backcharge",
+    question: "Q2: What happens in the app when you swipe a card to the right?",
+    options: ["It deletes the record","It opens the photo modal","It marks the record as Approved","It marks the record as Disputed"],
+    correct: "It marks the record as Approved",
+    required: true
+  },
+  3: {
+    questionId: "q3_backcharge",
+    question: "Q3: Which field links the record to the subcontractor responsible for the backcharge?",
+    options: ["Customer","Subcontractor to Backcharge","Vendor Brick and Mortar Location","Reason for Builder Backcharge"],
+    correct: "Subcontractor to Backcharge",
+    required: true
+  },
+  4: {
+    questionId: "q4_backcharge",
+    question: "Q4: Where are uploaded photos stored after being added in the app?",
+    options: ["Only in the browser cache","Airtable “Photos” field + Dropbox","A Google Drive folder","Email attachments"],
+    correct: "Airtable “Photos” field + Dropbox",
+    required: true
+  },
+  5: {
+    questionId: "q5_backcharge",
+    question: "Q5: Swiping a card to the left in the review screen will…",
+    options: ["Approve the backcharge","Dispute the backcharge","Archive the record","Refresh the page"],
+    correct: "Dispute the backcharge",
+    required: true
+  },
+  6: {
+    questionId: "q6_backcharge",
+    question: "Q6: Which Airtable field is used in the app to filter jobs by location?",
+    options: ["Vanir Branch","Job Name","Customer","GM/ACM Outcome"],
+    correct: "Vanir Branch",
+    required: true
+  },
+  7: {
+    questionId: "q7_backcharge",
+    question: "Q7: Which field identifies whether a record is Builder Issued or Vendor Issued?",
+    options: ["Type of Backcharge","Builder Backcharged Amount","Secondary Subcontractor to Backcharge","Photos"],
+    correct: "Type of Backcharge",
+    required: true
+  },
+  8: {
+    questionId: "q8_backcharge",
+    question: "Q8: What is the difference between “Sub Backcharge Amount” and “Vendor Amount to Backcharge”?",
+    options: ["They are the same","Sub applies to subcontractors; Vendor applies to vendors","Sub applies only to approved records; Vendor to disputed","Sub is numeric, Vendor is text"],
+    correct: "Sub applies to subcontractors; Vendor applies to vendors",
+    required: true
+  },
+  9: {
+    questionId: "q9_backcharge",
+    question: "Q9: Which Airtable field links back to the vendor being backcharged?",
+    options: ["Vendor to Backcharge (or Vendor Brick and Mortar Location)","Customer","Job Name","Approved or Dispute"],
+    correct: "Vendor to Backcharge (or Vendor Brick and Mortar Location)",
+    required: true
+  },
+  10: {
+    questionId: "q10_backcharge",
+    question: "Q10: Which calculated field can be added to see the combined backcharge amount for Builder, Subcontractor, and Vendor?",
+    options: ["Job Name","Total Backcharge Amount","Reason for Builder Backcharge","GM/ACM Outcome"],
+    correct: "Total Backcharge Amount",
     required: true
   }
-  // Add more by slide index…
 };
 
 /* ---------- DOM ---------- */
@@ -197,6 +351,13 @@ function showCaret(on){
   const caret = document.querySelector(".type-wrap .caret");
   if (caret) caret.style.visibility = on ? "visible" : "hidden";
 }
+/* ---------- Always advance to the next quiz index ---------- */
+function computeNextIndexByResult(currentIndex /*, isCorrect*/) {
+
+  const keys = Object.keys(QUIZ_BY_INDEX).map(k => +k).sort((a,b)=>a-b);
+  const nextKey = keys.find(k => k > currentIndex);
+  return (typeof nextKey === "number") ? nextKey : (currentIndex + 1);
+}
 
 /* ---------- Button handler (called by programmatic click) ---------- */
 async function onLoadDeckClick() {
@@ -211,13 +372,13 @@ async function onLoadDeckClick() {
     const urlSlides = `${GAS_ENDPOINT}?mode=slides&presentationId=${encodeURIComponent(pid)}`;
     console.log("[GAS] slides URL:", urlSlides);
     const j = await jsonp(GAS_ENDPOINT, {
-  mode: "slides",
-  presentationId: pid
-});
-if (!j || j.ok === false) {
-  throw new Error("GAS_ERROR: " + (j && j.error || "Unknown"));
-}
-state.slides = Array.isArray(j.slides) ? j.slides : [];
+      mode: "slides",
+      presentationId: pid
+    });
+    if (!j || j.ok === false) {
+      throw new Error("GAS_ERROR: " + (j && j.error || "Unknown"));
+    }
+    state.slides = Array.isArray(j.slides) ? j.slides : [];
 
     state.i = 0;
     render();
@@ -234,9 +395,11 @@ state.slides = Array.isArray(j.slides) ? j.slides : [];
     setLoad("");
     el.btnLoad.disabled = false;
 
-    // prime first 3–5 thumbs so the UI shows quickly
-    state.slides.slice(0, 5).forEach(s => queueThumb(pid, s.objectId));
-    processThumbQueue();
+const ahead = Math.min(state.slides.length, state.i + 10);
+for (let k = state.i; k < ahead; k++) queueThumb(state.presentationId, state.slides[k].objectId);
+schedule();
+
+    schedule();
   } catch (err) {
     console.error("[Deck Load] Error:", err);
     embedFallback(pid, String(err && err.message || err));
@@ -244,8 +407,6 @@ state.slides = Array.isArray(j.slides) ? j.slides : [];
     el.btnLoad.disabled = false;
   }
 }
-
-
 
 /* ---------- Fallback: live embed iframe ---------- */
 function embedFallback(pid, reason) {
@@ -260,6 +421,15 @@ function embedFallback(pid, reason) {
   }
   setNotice(humanMsg, "warn", true);
   el.embedHint.textContent = `Reason: ${reason}`;
+}
+function cacheKey(pid, sid) { return `thumb:${pid}:${sid}`; }
+function getCached(pid, sid) {
+  const k = cacheKey(pid, sid);
+  return thumbnailCache.get(sid) || localStorage.getItem(k) || "";
+}
+function setCached(pid, sid, dataUrl) {
+  thumbnailCache.set(sid, dataUrl);
+  try { localStorage.setItem(cacheKey(pid, sid), dataUrl); } catch {}
 }
 
 /* ---------- Rendering (on-demand thumbnails) ---------- */
@@ -283,6 +453,7 @@ function render() {
   el.counter.textContent = `${i + 1} / ${total}`;
   el.bar.style.width = Math.round(((i + 1) / total) * 100) + "%";
 
+  // ✅ define s BEFORE using it anywhere
   const s = state.slides[i];
 
   // prefer cached → already-fetched url → else load
@@ -290,22 +461,48 @@ function render() {
   const src = cached || s.thumbUrl || "";
 
   if (src) {
-    el.stage.innerHTML = `<img alt="${esc(s.title)}" src="${src}" />`;
+    el.stage.innerHTML = `<img alt="${esc(s.title)}" decoding="async" src="${src}" />`;
   } else {
     el.stage.innerHTML = `<div class="muted">Loading thumbnail...</div>`;
-    // trigger fetch; when it resolves, update the current slide view
+
+    // SIMPLE path (works with your current GAS):
     fetchSlideThumbnailThrottled(state.presentationId, s.objectId)
       .then((url) => {
-        s.thumbUrl = url;                 // persist on the slide object
-        if (state.slides[state.i] && state.slides[state.i].objectId === s.objectId) {
-          el.stage.innerHTML = `<img alt="${esc(s.title)}" src="${url}" />`;
+        s.thumbUrl = url;
+        if (state.slides[state.i]?.objectId === s.objectId) {
+          el.stage.innerHTML = `<img alt="${esc(s.title)}" decoding="async" src="${url}" />`;
         }
       })
       .catch((e) => console.warn("Thumb fetch failed", s.objectId, e));
+
+    // OPTIONAL LQIP path (only if your GAS recognizes ":small"/":large"):
+    
+    fetchSlideThumbnailThrottled(state.presentationId, s.objectId + ":small")
+      .then(urlSmall => {
+        if (state.slides[state.i]?.objectId === s.objectId) {
+          el.stage.innerHTML = `<img alt="${esc(s.title)}" decoding="async" src="${urlSmall}" />`;
+        }
+      })
+      .catch(()=>{});
+    fetchSlideThumbnailThrottled(state.presentationId, s.objectId + ":large")
+      .then(urlLarge => {
+        s.thumbUrl = urlLarge;
+        if (state.slides[state.i]?.objectId === s.objectId) {
+          el.stage.innerHTML = `<img alt="${esc(s.title)}" decoding="async" src="${urlLarge}" />`;
+        }
+      })
+      .catch(e => console.warn("Thumb fetch failed", s.objectId, e));
+    
   }
 
   renderQuiz(QUIZ_BY_INDEX[i] || null);
+
+  // 🔮 Predictive prefetch: next few slides
+  for (let k = state.i + 1; k <= state.i + 4 && k < state.slides.length; k++) {
+    queueThumb(state.presentationId, state.slides[k].objectId);
+  }
 }
+
 
 // Optional: if you still want to explicitly queue from render()
 const inflightThumbs = new Set();
@@ -318,9 +515,8 @@ function queueThumb(presentationId, slideId) {
     resolve: () => inflightThumbs.delete(slideId),
     reject:  () => inflightThumbs.delete(slideId)
   });
-  processThumbQueue();
+  schedule();
 }
-
 
 function renderQuiz(quiz) {
   if (!quiz) {
@@ -370,7 +566,16 @@ async function submitAnswer() {
   const answer = getChoice();
   if (!answer) return pulse("Choose an option.", "warn");
   const isCorrect = !!(quiz.correct && answer.trim() === quiz.correct.trim());
+  const targetIndex = computeNextIndexByResult(state.i, isCorrect);
 
+setTimeout(() => {
+  if (typeof targetIndex === "number" && !Number.isNaN(targetIndex)) {
+    state.i = clamp(targetIndex, 0, state.slides.length - 1);
+    render();
+  } else {
+    go(+1);
+  }
+}, 250);
   state.answers[quiz.questionId] = { answer, isCorrect };
 
   const payload = {
@@ -383,6 +588,7 @@ async function submitAnswer() {
     timestamp: new Date().toISOString()
   };
 
+  let savedOk = false;
   try {
     if (AIRTABLE_API_KEY && AIRTABLE_BASE_ID && AIRTABLE_TABLE) {
       await upsertAirtableBySlideId(payload.slideId, {
@@ -394,7 +600,7 @@ async function submitAnswer() {
         UserEmail: payload.userEmail,
         Timestamp: payload.timestamp
       });
-      pulse(isCorrect ? "Saved ✓ (correct) via Airtable" : "Saved ✓ via Airtable", isCorrect ? "ok" : "");
+      savedOk = true;
     } else {
       const r = await fetch(AIRTABLE_WEBHOOK_URL, {
         method: "POST",
@@ -402,11 +608,26 @@ async function submitAnswer() {
         body: JSON.stringify(payload)
       });
       if (!r.ok) throw new Error("Webhook failed: " + r.status);
-      pulse(isCorrect ? "Saved ✓ (correct)" : "Saved ✓", isCorrect ? "ok" : "");
+      savedOk = true;
     }
   } catch (err) {
     console.error(err);
     pulse("Save failed. " + (err && err.message ? err.message : ""), "bad");
+  } finally {
+    // Always show feedback, then advance regardless of correctness
+    if (savedOk) {
+      pulse(isCorrect ? "Saved ✓ (correct)" : "Saved ✓ (try again next time)", isCorrect ? "ok" : "");
+    }
+    const isLast = state.i >= state.slides.length - 1;
+    if (isLast) {
+      // End of deck
+      setTimeout(() => {
+        pulse("Training complete. Great job!", "ok");
+      }, 200);
+    } else {
+      // Auto-advance even if the answer was wrong
+      setTimeout(() => go(+1), 250);
+    }
   }
 }
 
@@ -541,5 +762,18 @@ async function fetchWithTimeoutJSON(url, { timeoutMs = 15000, ...opts } = {}) {
   } else {
     btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     console.log("Clicked Load with Slides ID:", SLIDES_ID);
+  }
+})();
+(function initEmailPersistence(){
+  const saved = loadSavedEmail();
+  if (saved && el.userEmail) el.userEmail.value = saved;
+
+  if (el.userEmail) {
+    el.userEmail.addEventListener("change", saveEmailNow);
+    el.userEmail.addEventListener("blur", saveEmailNow);
+    el.userEmail.addEventListener("input", () => {
+      clearTimeout(initEmailPersistence._t);
+      initEmailPersistence._t = setTimeout(saveEmailNow, 300);
+    });
   }
 })();
