@@ -56,12 +56,14 @@
   </div>
 
   <script>
-    // Airtable config (Questions + Answers table)
+    // Airtable config (Questions + Answers table + Titles table for Assigned Modules)
     const AIR = {
       API_KEY: "patTGK9HVgF4n1zqK.cbc0a103ecf709818f4cd9a37e18ff5f68c7c17f893085497663b12f2c600054",
       BASE_ID: "app3rkuurlsNa7ZdQ",
-      Q_TABLE: "tblpvVpIJnkWco25E",   // Questions
+      Q_TABLE: "tblpvVpIJnkWco25E",   // Questions (has Module + Active)
       A_TABLE: "tblkz5HyZGpgO093S",   // Answers
+      T_TABLE: "tblppx6qNXXNJL7ON",   // Titles/Assignments (has 'Assigned Modules')
+      T_FIELD: "Assigned Modules"     // Field name to read
     };
     const email = localStorage.getItem('authEmail');
     document.getElementById('hello').textContent = email || '';
@@ -74,8 +76,8 @@
     }
     const baseUrl = (t) => `https://api.airtable.com/v0/${AIR.BASE_ID}/${encodeURIComponent(t)}`;
 
+    // Fetch all distinct modules referenced by Active questions
     async function fetchDistinctModules(){
-      // Pull all active questions and gather distinct Module values
       const url = new URL(baseUrl(AIR.Q_TABLE));
       url.searchParams.set('pageSize','100');
       url.searchParams.set('filterByFormula', 'AND({Active}=1)');
@@ -103,6 +105,42 @@
         if (f.QuestionId) byModule.get(m).qids.push(String(f.QuestionId));
       }
       return byModule; // Map(moduleName -> {name, qids})
+    }
+
+    // Fetch the union of every value found in Titles table's 'Assigned Modules' field
+    async function fetchAssignedModuleNames(){
+      const url = new URL(baseUrl(AIR.T_TABLE));
+      url.searchParams.set('pageSize','100');
+      // (Optional) If there's an 'Active' field on titles, uncomment next line:
+      // url.searchParams.set('filterByFormula', 'AND({Active}=1)');
+      const assigned = new Set();
+      let offset;
+      do {
+        if (offset) url.searchParams.set('offset', offset);
+        const res = await fetch(url.toString(), { headers: h() });
+        if (!res.ok) throw new Error('Titles load failed: '+res.status);
+        const data = await res.json();
+        for (const rec of (data.records||[])){
+          const f = rec.fields||{};
+          const val = f[AIR.T_FIELD];
+          if (Array.isArray(val)) {
+            // Multi-select or array
+            for (const v of val) if (v && String(v).trim()) assigned.add(String(v).trim());
+          } else if (typeof val === 'string') {
+            // Comma/semicolon separated fallbacks
+            const parts = val.split(/[,;\n]/g).map(s => s.trim()).filter(Boolean);
+            for (const p of parts) assigned.add(p);
+          }
+        }
+        offset = data.offset;
+        if (offset){
+          const u = new URL(baseUrl(AIR.T_TABLE));
+          u.searchParams.set('pageSize','100');
+          // u.searchParams.set('filterByFormula', 'AND({Active}=1)');
+          url.search = u.search;
+        }
+      } while(offset);
+      return assigned; // Set of module names
     }
 
     // Helper: chunk an array
@@ -167,9 +205,18 @@
       const list = document.getElementById('list');
       list.innerHTML = '<div class="muted">Loading modules…</div>';
       try{
-        const byModule = await fetchDistinctModules();
+        // Load distinct question modules and assigned modules, then intersect
+        const [byModule, assignedSet] = await Promise.all([
+          fetchDistinctModules(),
+          fetchAssignedModuleNames()
+        ]);
+
         const search = (document.getElementById('search').value||'').trim().toLowerCase();
-        const arr = Array.from(byModule.values()).filter(m => !search || m.name.toLowerCase().includes(search));
+        // Keep a module only if it's in Assigned Modules list
+        const arr = Array.from(byModule.values())
+          .filter(m => assignedSet.has(m.name))
+          .filter(m => !search || m.name.toLowerCase().includes(search));
+
         if (!arr.length){ list.innerHTML = '<div class="muted">No modules found.</div>'; return; }
 
         // compute progress + correctness per module

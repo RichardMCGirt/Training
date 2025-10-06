@@ -51,7 +51,7 @@
     .chip { padding:4px 8px; border:1px solid #2b3564; border-radius:999px; font-size:12px; cursor:pointer; }
     /* Assignment checklist */
     .checklist { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:10px; margin-top:8px; }
-    .check-item { display:flex; align-items:center; gap:8px; padding:8px 10px; border:1px solid #2b3564; border-radius:10px; background:#0b1435; }
+    .check-item { display:flex; align-items:center; gap:8px; padding:8px 10px; border:1px solid #2b3564; border-radius:10px; background:#0b1435; display: none; }
   </style>
 </head>
 <body>
@@ -156,13 +156,15 @@
     </section>
   </div>
 
-  <!-- NEW: Assign Modules by Job Title -->
+  <!-- Assign Modules by Job Title (multi-select) -->
   <section class="card" id="assignCard">
     <h3 style="margin-top:0">Assign Modules by Job Title</h3>
-    <div class="row">
+    <div class="row" style="align-items:flex-start;">
       <div style="flex:1">
-        <label class="muted small" for="titleSelect">Title (from tblppx6qNXXNJL7ON → Title)</label>
-        <select id="titleSelect"></select>
+        <label class="muted small" for="titleSelect">
+          <span class="hint">hold Ctrl/Cmd to select multiple</span>
+        </label>
+        <select id="titleSelect" multiple size="8"></select>
       </div>
       <div>
         <button id="btnReloadTitles" class="btn">Reload Titles</button>
@@ -170,7 +172,7 @@
     </div>
     <div id="moduleChecklist" class="checklist" style="margin-top:8px"></div>
     <div class="row">
-      <button id="btnSaveAssignment" class="btn btn-ok">Save Assignment</button>
+      <button id="btnSaveAssignment" class="btn btn-ok">Save Assignment (applies to all selected titles)</button>
       <button id="btnClearAssignment" class="btn btn-danger" type="button">Clear All</button>
       <span id="assignStatus" class="muted small"></span>
     </div>

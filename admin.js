@@ -1,4 +1,6 @@
 // admin.js – Questions editor + Assignments (Modules by Job Title)
+// Long Text "Assigned Modules" support + ADD (merge), with VERIFY + DEEP LOGS
+// Uses Title only for listing; NEVER patches the Title field.
 
 // ========= Airtable Config =========
 const AIRTABLE = {
@@ -6,11 +8,14 @@ const AIRTABLE = {
   BASE_ID: "app3rkuurlsNa7ZdQ",
   // Questions table (stores quiz questions)
   TABLE_ID: "tblpvVpIJnkWco25E",
-  // Titles table (stores Job Titles with an "Assigned Modules" field)
+  // Titles table (stores Job Titles and Assigned Modules long text)
   TITLES_TABLE_ID: "tblppx6qNXXNJL7ON",
-  // Optional: a friendly name for the Titles field
+  // Display/title field in Titles table (synced). We use it for listing only; DO NOT PATCH IT.
   TITLES_FIELD_NAME: "Title",
-  TITLES_ASSIGNED_FIELD: "Assigned Modules"
+  // Long text field holding modules; if label differs in Airtable, we’ll auto-detect it.
+  TITLES_ASSIGNED_FIELD: "Assigned Modules",
+  // Optional mapping field (long text) like "Title: m1, m2". Leave null to auto-detect or skip.
+  TITLES_MAPPING_FIELD: "Assigned Modules Mapping" // <- writable long text
 };
 
 // ========= Tiny DOM Helpers =========
@@ -59,7 +64,7 @@ const ui = {
 };
 
 // ========= Toast / Utils =========
-function toast(msg, kind="info", ms=1800){
+function toast(msg, kind="info", ms=2000){
   try {
     ui.toastMsg.textContent = msg;
     ui.toast.classList.add("show");
@@ -84,7 +89,16 @@ function baseUrl(tableId = AIRTABLE.TABLE_ID){
   }
   return `https://api.airtable.com/v0/${AIRTABLE.BASE_ID}/${encodeURIComponent(tableId)}`;
 }
-
+// Read a single record (for verification)
+async function readRecord(tableId, id){
+  const url = `${baseUrl(tableId)}/${encodeURIComponent(id)}`;
+  const res = await fetch(url, { headers: headers() });
+  if (!res.ok) {
+    const body = await res.text().catch(()=>"(no body)");
+    throw new Error(`Read failed: HTTP ${res.status} – ${body}`);
+  }
+  return res.json();
+}
 // Generic list with sort + optional filter + paging for any table
 async function listAll({ tableId = AIRTABLE.TABLE_ID, pageSize=100, offset, sortField="Order", sortDir="asc", filterByFormula } = {}){
   const url = new URL(baseUrl(tableId));
@@ -151,8 +165,13 @@ const state = {
   modules: new Set(),
 
   // Titles
-  titles: [],           // [{id, title}]
-  selectedTitleId: null // record id
+  titles: [],             // [{id, title, assigned: string[]}]
+  selectedTitleIds: [],   // array of record ids
+  // Detected field names (from Titles table records)
+  assignedFieldName: null,  // long text storing modules list
+  mappingFieldName: null,    // optional long text for "Title: m1, m2"
+   idsByTitleKey: Object.create(null), // { 'purchasing agent': ['recA','recB', ...] }
+  titleKeyById: Object.create(null)   // { 'recA': 'purchasing agent', ... }
 };
 
 // ========= Options editor (Questions) =========
@@ -391,7 +410,7 @@ async function refreshList({ keepPage=false } = {}){
     populateModuleSelect(state.modules);
 
     // Also (re)build assignment checklist if already visible/used
-    buildModuleChecklist();
+    rebuildChecklistForCurrentSelection();
 
     renderList(filterRows(ui.search ? ui.search.value : ""));
     ui.listStatus && (ui.listStatus.textContent = `Showing ${state.rows.length} ${state.rows.length===1?"record":"records"}.`);
@@ -404,33 +423,145 @@ async function refreshList({ keepPage=false } = {}){
   }
 }
 
-// ========= Assignments: Titles ⇄ Modules =========
+// ========= Assignments: Titles ⇄ Modules (multi-select, Long text) =========
 function buildModuleChecklist(selected = new Set()){
+  // Stay hidden / non-interactive: we render a read-only preview only.
   if (!ui.moduleChecklist) return;
+
   const modules = Array.from(state.modules).sort((a,b)=>a.localeCompare(b));
   if (!modules.length) {
     ui.moduleChecklist.innerHTML = `<div class="muted small">No modules found yet. Create questions with a Module value first.</div>`;
     return;
   }
-  ui.moduleChecklist.innerHTML = modules.map(m => {
-    const id = `chk_${m.replace(/\W+/g,'_').toLowerCase()}`;
-    const checked = selected.has(m) ? "checked" : "";
-    return `
-      <label class="check-item" for="${id}">
-        <input type="checkbox" id="${id}" class="modCheck" value="${esc(m)}" ${checked}>
-        <span>${esc(m)}</span>
-      </label>
-    `;
-  }).join("");
+
+  // Show the modules that are selected across ALL chosen titles (intersection),
+  // but as plain text pills, not checkboxes. Keep markup super light.
+  const pills = Array.from(selected).map(m => `
+    <span class="chip" aria-hidden="true" title="Assigned to all selected titles">${esc(m)}</span>
+  `).join("");
+
+  ui.moduleChecklist.innerHTML = `
+    <div class="muted small" style="margin-bottom:6px">
+      Assigned to all selected titles (read-only preview):
+    </div>
+    <div class="chips" aria-hidden="true">${pills || '<span class="muted small">(none shared)</span>'}</div>
+  `;
 }
+
 function readChecklistSelection(){
-  return $$(".modCheck").filter(c => c.checked).map(c => c.value);
+  // Pull the module the admin picked at the top (dropdown or typed input).
+  const m = currentModuleValue();
+  return m ? [m] : [];
 }
+
+
+// split long text → array
+function parseModulesFromLongText(v){
+  if (!v) return [];
+  // split on newline, comma, semicolon; trim; dedupe
+  const parts = String(v).split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
+  return Array.from(new Set(parts));
+}
+// join array → long text (newline)
+function joinModulesForLongText(arr){
+  return (arr || []).map(s => String(s).trim()).filter(Boolean).join("\n");
+}
+
+function getSelectedTitleIds(){
+  const sel = ui.titleSelect;
+  if (!sel) return [];
+  return Array.from(sel.selectedOptions || []).map(o => o.value).filter(Boolean);
+}
+
+// Compute intersection + union of assigned modules for selected titles
+function computeAssignedAgg(selectedIds){
+  const chosen = state.titles.filter(t => selectedIds.includes(t.id));
+  const lists = chosen.map(t => new Set((t.assigned || []).map(String)));
+  if (lists.length === 0) return { all: new Set(), some: new Set() };
+  // union
+  const union = new Set();
+  lists.forEach(s => s.forEach(x => union.add(x)));
+  // intersection
+  let intersection = new Set(lists[0]);
+  for (let i=1;i<lists.length;i++){
+    const next = new Set();
+    lists[i].forEach(x => { if (intersection.has(x)) next.add(x); });
+    intersection = next;
+  }
+  return { all: intersection, some: union };
+}
+
+function rebuildChecklistForCurrentSelection(){
+  const ids = state.selectedTitleIds;
+  const { all, some } = computeAssignedAgg(ids);
+  buildModuleChecklist(all);
+
+  // Show hint: modules present in SOME but not ALL
+  if (ui.assignStatus){
+    if (!ids.length) {
+      ui.assignStatus.textContent = "Select one or more titles to view/assign modules.";
+    } else {
+      const diff = [...some].filter(x => !all.has(x));
+      ui.assignStatus.textContent =
+        diff.length
+          ? `Pre-checked = modules shared by ALL selected titles. Also detected ${diff.length} module(s) present in SOME but not all.`
+          : `All selected titles share the same module set.`;
+    }
+  }
+}
+
+// Field detection (Titles table)
+function detectAssignedFieldNameFromRecordFields(fieldsObj){
+  if (!fieldsObj) return null;
+  const keys = Object.keys(fieldsObj);
+  if (!keys.length) return null;
+
+  // Preferred exact config first (case-insensitive)
+  const want = (AIRTABLE.TITLES_ASSIGNED_FIELD || "").toLowerCase();
+  let found = keys.find(k => k.toLowerCase() === want);
+  if (found) return found;
+
+  // Heuristics: look for name containing both "assigned" and "module"
+  const cand = keys.find(k => {
+    const s = k.toLowerCase();
+    return s.includes("assigned") && s.includes("module");
+  });
+  if (cand) return cand;
+
+  // Fallback: any "modules" field
+  const modOnly = keys.find(k => k.toLowerCase().includes("modules"));
+  return modOnly || null;
+}
+function detectMappingFieldNameFromRecordFields(fieldsObj){
+  if (!fieldsObj) return null;
+  const keys = Object.keys(fieldsObj);
+  if (!keys.length) return null;
+
+  if (AIRTABLE.TITLES_MAPPING_FIELD) {
+    const want = AIRTABLE.TITLES_MAPPING_FIELD.toLowerCase();
+    const exact = keys.find(k => k.toLowerCase() === want);
+    if (exact) return exact;
+  }
+  // Heuristics: something that looks like a mapping column
+  const cand = keys.find(k => {
+    const s = k.toLowerCase();
+    return s.includes("assigned") && (s.includes("map") || s.includes("mapping"));
+  });
+  return cand || null;
+}
+
 async function fetchDistinctTitles(){
   console.groupCollapsed("[Admin] fetchDistinctTitles");
   try {
-    const titles = [];
+    const all = []; // all records (no dedupe)
     let offset;
+    let detectedAssigned = null;
+    let detectedMapping = null;
+
+    // clear maps
+    state.idsByTitleKey = Object.create(null);
+    state.titleKeyById  = Object.create(null);
+
     do {
       const data = await listAll({
         tableId: AIRTABLE.TITLES_TABLE_ID,
@@ -439,24 +570,52 @@ async function fetchDistinctTitles(){
         sortField: AIRTABLE.TITLES_FIELD_NAME,
         sortDir: "asc"
       });
+
       (data.records || []).forEach(r => {
         const f = r.fields || {};
-        const t = (f[AIRTABLE.TITLES_FIELD_NAME] || "").trim();
-        if (t) titles.push({ id: r.id, title: t, assigned: Array.isArray(f[AIRTABLE.TITLES_ASSIGNED_FIELD]) ? f[AIRTABLE.TITLES_ASSIGNED_FIELD] : [] });
+        if (!detectedAssigned) detectedAssigned = detectAssignedFieldNameFromRecordFields(f);
+        if (!detectedMapping) detectedMapping = detectMappingFieldNameFromRecordFields(f);
+
+        const rawTitle = f[AIRTABLE.TITLES_FIELD_NAME];
+        const title = normalizeTitle(rawTitle);
+        if (!title) return;
+
+        const assigned = (detectedAssigned && typeof f[detectedAssigned] !== "undefined")
+          ? parseModulesFromLongText(f[detectedAssigned])
+          : (typeof f[AIRTABLE.TITLES_ASSIGNED_FIELD] !== "undefined")
+              ? parseModulesFromLongText(f[AIRTABLE.TITLES_ASSIGNED_FIELD])
+              : [];
+
+        const rec = { id: r.id, title, assigned };
+        all.push(rec);
+
+        // build maps
+        const key = title.toLowerCase().trim();
+        state.titleKeyById[r.id] = key;
+        if (!state.idsByTitleKey[key]) state.idsByTitleKey[key] = [];
+        state.idsByTitleKey[key].push(r.id);
       });
+
       offset = data.offset;
     } while (offset);
 
-    // Dedup by title text just in case
+    state.assignedFieldName = detectedAssigned || state.assignedFieldName;
+    state.mappingFieldName  = detectedMapping  || state.mappingFieldName;
+
+    // Dedupe **for UI only** (keep 1 representative per Title)
     const seen = new Set();
     const unique = [];
-    for (const row of titles) {
-      const k = row.title.toLowerCase();
-      if (!seen.has(k)) { seen.add(k); unique.push(row); }
+    for (const row of all) {
+      const key = row.title.toLowerCase();
+      if (!seen.has(key)) { seen.add(key); unique.push(row); }
     }
+
     state.titles = unique;
     populateTitleSelect(unique);
-    console.log("[Admin] Titles loaded:", { count: unique.length, sample: unique[0] });
+
+    console.log("[Admin] Using assigned modules field:", state.assignedFieldName);
+    if (state.mappingFieldName) console.log("[Admin] Mapping field:", state.mappingFieldName);
+    console.log("[Admin] Titles (unique):", unique.length, "All:", all.length);
     return unique;
   } catch (e) {
     console.error("[Admin] fetchDistinctTitles failed:", e);
@@ -466,60 +625,122 @@ async function fetchDistinctTitles(){
     console.groupEnd();
   }
 }
+
+function normalizeTitle(v) {
+  if (v == null) return "";
+  if (typeof v === "string") return v.trim();
+  if (typeof v === "number") return String(v);
+  if (Array.isArray(v)) {
+    for (const item of v) {
+      if (typeof item === "string") return item.trim();
+      if (item && typeof item === "object") {
+        if (typeof item.name === "string") return item.name.trim();
+        if (typeof item.id === "string") return item.id;
+      }
+    }
+    return v.length ? String(v[0]) : "";
+  }
+  if (typeof v === "object") {
+    if (typeof v.name === "string") return v.name.trim();
+    return JSON.stringify(v);
+  }
+  try { return String(v); } catch { return ""; }
+}
 function populateTitleSelect(list){
   if (!ui.titleSelect) return;
   if (!Array.isArray(list) || !list.length) {
     ui.titleSelect.innerHTML = `<option value="">(no titles found)</option>`;
     return;
   }
-  ui.titleSelect.innerHTML =
-    `<option value="">(select a title)</option>` +
-    list.map(t => `<option value="${esc(t.id)}">${esc(t.title)}</option>`).join("");
+  // Multi-select: no placeholder
+  ui.titleSelect.innerHTML = list.map(t => `<option value="${esc(t.id)}">${esc(t.title)}</option>`).join("");
 }
+
+// Multi-select handler
 function onTitleChange(){
-  const id = ui.titleSelect?.value || "";
-  state.selectedTitleId = id || null;
-  // If we know the assigned modules for this title, pre-check them
-  const row = state.titles.find(x => x.id === id);
-  const preselected = new Set((row?.assigned || []).map(String));
-  buildModuleChecklist(preselected);
+  state.selectedTitleIds = getSelectedTitleIds();
+  rebuildChecklistForCurrentSelection();
 }
+
+// Save assignment — MERGE into existing Long text; VERIFY read→patch→read; NEVER patch Title
 async function saveAssignment(){
-  if (!state.selectedTitleId) {
-    toast("Pick a Title first.", "bad");
-    return;
-  }
+  const pickedIds = state.selectedTitleIds;
+  if (!pickedIds.length) { toast("Pick at least one Title.", "bad"); return; }
+
+  // 👉 Expand to **all** records with the same Title(s)
+  const expandedIds = Array.from(new Set(pickedIds.flatMap(id => {
+    const key = state.titleKeyById[id];
+    return key ? (state.idsByTitleKey[key] || [id]) : [id];
+  })));
+
   const selected = readChecklistSelection();
+  if (!selected.length) { toast("No module selected.", "bad"); return; }
+
+  const fieldName   = state.assignedFieldName || AIRTABLE.TITLES_ASSIGNED_FIELD;
+  const mappingField = state.mappingFieldName || null;
+  if (!fieldName) { toast("Assigned field not found.", "bad"); return; }
+
+  console.group("[Admin] saveAssignment VERIFY");
+  console.log("Using field:", fieldName, " Mapping field:", mappingField || "(none)");
+  console.log("Selected Titles (UI ids):", pickedIds);
+  console.log("Expanded ids (all rows w/ same Title):", expandedIds);
+  console.log("Selected module(s):", selected);
+
   try {
-    const res = await fetch(baseUrl(AIRTABLE.TITLES_TABLE_ID), {
-      method: "PATCH",
-      headers: headers(),
-      body: JSON.stringify({
-        records: [{
-          id: state.selectedTitleId,
-          fields: {
-            // Assuming "Assigned Modules" is a multi-select of text options.
-            [AIRTABLE.TITLES_ASSIGNED_FIELD]: selected
-          }
-        }],
-        typecast: true
-      })
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(()=>"(no body)");
-      console.error("[Admin] saveAssignment failed:", res.status, body);
-      throw new Error(`Save failed HTTP ${res.status}`);
+    const toPatch = [];
+    for (const id of expandedIds) {
+      const rec = await readRecord(AIRTABLE.TITLES_TABLE_ID, id);
+      const f = rec.fields || {};
+      const titleTxt = normalizeTitle(f[AIRTABLE.TITLES_FIELD_NAME]);
+      const currentRaw  = f[fieldName];
+      const currentList = parseModulesFromLongText(currentRaw);
+      const mergedSet   = new Set([...currentList, ...selected].map(s => String(s).trim()).filter(Boolean));
+      const mergedArr   = Array.from(mergedSet).sort((a,b)=>a.localeCompare(b));
+      const nextText    = joinModulesForLongText(mergedArr);
+
+      if (nextText === (currentRaw == null ? "" : String(currentRaw))) {
+        console.log(`NO-OP ${id} (${titleTxt})`);
+        continue;
+      }
+      const fields = { [fieldName]: nextText };
+      if (mappingField) fields[mappingField] = `${titleTxt}: ${mergedArr.join(", ")}`;
+      toPatch.push({ id, fields });
     }
-    toast("Assignment saved.");
-    ui.assignStatus && (ui.assignStatus.textContent = `Saved ${selected.length} ${selected.length===1?"module":"modules"}.`);
-    // Update cached assigned list for this title
-    const row = state.titles.find(x => x.id === state.selectedTitleId);
-    if (row) row.assigned = selected.slice();
+
+    if (!toPatch.length) { toast("Nothing to update.", "bad"); console.groupEnd(); return; }
+
+    // PATCH in chunks of 10 (unchanged)
+    for (let i=0; i<toPatch.length; i+=10) {
+      const chunk = toPatch.slice(i, i+10);
+      const res = await fetch(baseUrl(AIRTABLE.TITLES_TABLE_ID), {
+        method: "PATCH",
+        headers: headers(),
+        body: JSON.stringify({ records: chunk, typecast: true })
+      });
+      const bodyText = await res.text().catch(()=>"(no body)");
+      if (!res.ok) { console.error("[Admin] PATCH failed", res.status, bodyText); throw new Error(`Save failed HTTP ${res.status}`); }
+      try { console.log("PATCH ok:", JSON.parse(bodyText)); } catch { console.log("PATCH ok (raw):", bodyText); }
+    }
+
+    // Verify (optional keep)
+    for (const r of toPatch) {
+      const after = await readRecord(AIRTABLE.TITLES_TABLE_ID, r.id);
+      console.log(`Verify ${r.id}:`, after?.fields?.[fieldName]);
+    }
+
+    toast(`Updated ${toPatch.length} record(s) across all rows sharing the same Title.`);
+    ui.assignStatus && (ui.assignStatus.textContent = `Updated ${toPatch.length}/${expandedIds.length} records.`);
+    console.groupEnd();
+
+    // Update local cache (optional)
+    // You can either refetch titles or update state.titles for the representative ones.
   } catch (e) {
     console.error(e);
     toast("Save failed", "bad");
+    console.groupEnd();
   }
 }
+
 function clearAssignmentChecks(){
   $$(".modCheck").forEach(c => c.checked = false);
   ui.assignStatus && (ui.assignStatus.textContent = "Cleared (not saved).");
@@ -549,7 +770,10 @@ if (ui.btnSave) ui.btnSave.addEventListener("click", async (e) => {
 if (ui.btnReset) ui.btnReset.addEventListener("click", (e) => { e.preventDefault(); resetForm(); });
 
 // Assignments: events
-if (ui.btnReloadTitles) ui.btnReloadTitles.addEventListener("click", fetchDistinctTitles);
+if (ui.btnReloadTitles) ui.btnReloadTitles.addEventListener("click", async () => {
+  await fetchDistinctTitles();
+  rebuildChecklistForCurrentSelection();
+});
 if (ui.titleSelect) ui.titleSelect.addEventListener("change", onTitleChange);
 if (ui.btnSaveAssignment) ui.btnSaveAssignment.addEventListener("click", saveAssignment);
 if (ui.btnClearAssignment) ui.btnClearAssignment.addEventListener("click", clearAssignmentChecks);
@@ -569,6 +793,6 @@ if (ui.btnClearAssignment) ui.btnClearAssignment.addEventListener("click", clear
 
   // Load titles immediately so the select isn't empty
   fetchDistinctTitles()
-    .then(() => onTitleChange())
+    .then(() => rebuildChecklistForCurrentSelection())
     .catch(e => console.error("[Admin] Titles initial load failed:", e));
 })();
