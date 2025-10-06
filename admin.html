@@ -10,7 +10,7 @@
     :root{ --ok:#29c16b; --bad:#e05d5d; --soft:#1b254b; }
     body { background: var(--bg, #0b1028); }
     .wrap { max-width: var(--page-max, 1200px); margin: 0 auto; padding: 16px; }
-    header .title { font-size: 22px; font-weight: 700; }
+    header .title { font-size: 22px; align-items: center; font-weight: 700; }
     .toolbar { display:flex; gap:10px; align-items:center; flex-wrap: wrap; }
     .toolbar .grow { flex:1; }
     .grid { display:grid; grid-template-columns: 1fr 1.2fr; gap:16px; }
@@ -70,11 +70,9 @@
 <div class="wrap">
   <header>
     <div class="row" style="justify-content: space-between;">
+          <a class="btn btn-ghost" href="index.html">← Back</a>
       <div class="title">Training Admin</div>
       <div class="row">
-        <span class="pill">Questions</span>
-        <span class="pill">Assignments</span>
-        <a class="btn btn-ghost" href="index.html">← Back</a>
       </div>
     </div>
   </header>
@@ -130,12 +128,7 @@
         </div>
         <div id="options" class="options"></div>
 
-        <div class="row">
-          <button id="btnSave" class="btn btn-ok">Save</button>
-          <button id="btnReset" class="btn btn-ghost" type="button">Reset</button>
-          <span id="saveStatus" class="muted small"></span>
-        </div>
-      </div>
+      
     </section>
 
     <!-- Grouped Modules & Questions (collapsible) -->
@@ -166,7 +159,7 @@
     </div>
     <div id="moduleChecklist" class="checklist" style="margin-top:8px"></div>
     <div class="row">
-      <button id="btnSaveAssignment" class="btn btn-ok">Save Assignment (applies to all selected titles)</button>
+      <button id="btnSaveAssignment" class="btn btn-ok">Save Assignment</button>
       <button id="btnClearAssignment" class="btn btn-danger" type="button">Clear All</button>
       <span id="assignStatus" class="muted small"></span>
     </div>

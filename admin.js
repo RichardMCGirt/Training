@@ -72,7 +72,8 @@ function toast(msg, kind="info", ms=2000){
 }
 function esc(s){ return String(s ?? "").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[m])); }
 const asBool = v => !!(v === true || v === "true" || v === 1 || v === "1" || v === "on");
-function safeParseJSON(v){ try { return JSON.parse(v); } catch { return Array.isArray(v) ? v : []; }}
+function safeParseJSON(v){ try { return JSON.parse(v); } catch { return Array.isArray(v) ? v : [];}}
+const dangerConfirm = (msg) => window.confirm(msg);
 
 // ========= Fetch helpers =========
 function headers(){
@@ -133,6 +134,32 @@ async function updateRecord(id, fields){
     body: JSON.stringify({ records: [{ id, fields }], typecast: true }),
   });
   if (!res.ok) throw new Error(`Update failed: HTTP ${res.status} – ${await res.text()}`);
+  return res.json();
+}
+// ======== NEW: Delete helpers =========
+// Delete a single record in the Questions table
+async function deleteRecord(id){
+  if (!id) throw new Error("Missing record id");
+  const url = `${baseUrl()}/${encodeURIComponent(id)}`;
+  const res = await fetch(url, { method: "DELETE", headers: headers() });
+  if (!res.ok) {
+    const body = await res.text().catch(()=>"(no body)");
+    throw new Error(`Delete failed: HTTP ${res.status} – ${body}`);
+  }
+  return res.json();
+}
+// Batch delete (optional utility) – accepts an array of ids
+async function deleteRecords(ids = []){
+  const unique = Array.from(new Set(ids.filter(Boolean)));
+  if (!unique.length) return { deleted: [] };
+  // Airtable batch deletion via query params records[]=id
+  const url = new URL(baseUrl());
+  unique.forEach(id => url.searchParams.append("records[]", id));
+  const res = await fetch(url.toString(), { method: "DELETE", headers: headers() });
+  if (!res.ok) {
+    const body = await res.text().catch(()=>"(no body)");
+    throw new Error(`Batch delete failed: HTTP ${res.status} – ${body}`);
+  }
   return res.json();
 }
 
@@ -310,8 +337,9 @@ function renderModulesView(rows){
       const id = esc(r.id);
       return `<div class="qline">
         <div class="qtext">${qtxt}</div>
-        <div class="actions">
+        <div class="actions" style="display:flex; gap:8px">
           <button class="btn btn-ghost edit" data-id="${id}">Edit</button>
+          <button class="btn btn-danger delete" data-id="${id}">Delete</button>
         </div>
       </div>`;
     }).join("");
@@ -348,6 +376,28 @@ function renderModulesView(rows){
       state.editingId = id;
       fillForm(row.fields);
       window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+  });
+
+  // bind delete buttons
+  el.querySelectorAll(".delete").forEach(b => {
+    b.addEventListener("click", async () => {
+      const id = b.getAttribute("data-id");
+      const row = state.rows.find(x => x.id === id);
+      const title = row?.fields?.Question ? `“${row.fields.Question.slice(0, 80)}${row.fields.Question.length>80?"…":""}”` : `ID ${id}`;
+      if (!dangerConfirm(`Delete this question ${title}?\nThis action cannot be undone.`)) return;
+      try {
+        await deleteRecord(id);
+        toast("Deleted");
+        // remove from local state and re-render quickly
+        state.rows = state.rows.filter(r => r.id !== id);
+        renderModulesView(filterRows(ui.search ? ui.search.value : ""));
+        // refresh to ensure module lists + counts stay accurate
+        await refreshList();
+      } catch (e) {
+        console.error(e);
+        toast(e?.message || "Delete failed", "bad");
+      }
     });
   });
 }
@@ -655,4 +705,4 @@ if (ui.btnRefresh) ui.btnRefresh.addEventListener('click', () => refreshList());
   } catch (e) {
     console.error(e);
   }
-})(); 
+})();
