@@ -19,7 +19,10 @@
     .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
     .progress{height:8px;border-radius:999px;background:#e5e7eb;overflow:hidden}
     .progress i{display:block;height:100%;width:0%;background:#2563eb}
+    .progress.correct i{background:#16a34a}
     .pill{display:inline-block;padding:2px 8px;border:1px solid #e5e7eb;border-radius:999px;font-size:12px;color:#374151}
+    .stat{display:flex;justify-content:space-between;font-size:13px;margin-top:8px}
+    .stat b{font-weight:600}
   </style>
   <script src="./auth.js"></script>
 </head>
@@ -45,7 +48,7 @@
     <div style="height:16px"></div>
 
     <div class="card">
-      <div class="hd">Your modules</div>
+      <div class="hd">modules</div>
       <div class="bd">
         <div id="list" class="grid"></div>
       </div>
@@ -63,12 +66,12 @@
     const email = localStorage.getItem('authEmail');
     document.getElementById('hello').textContent = email || '';
 
-function h() {
-  return {
-    Authorization: `Bearer ${AIR.API_KEY}`,
-    "Content-Type": "application/json"
-  };
-}
+    function h() {
+      return {
+        Authorization: `Bearer ${AIR.API_KEY}`,
+        "Content-Type": "application/json"
+      };
+    }
     const baseUrl = (t) => `https://api.airtable.com/v0/${AIR.BASE_ID}/${encodeURIComponent(t)}`;
 
     async function fetchDistinctModules(){
@@ -102,29 +105,60 @@ function h() {
       return byModule; // Map(moduleName -> {name, qids})
     }
 
-    async function fetchAnswerCountForQids(userEmail, qids){
+    // Helper: chunk an array
+    function chunk(arr, size){
+      const out = [];
+      for (let i=0; i<arr.length; i+=size) out.push(arr.slice(i, i+size));
+      return out;
+    }
+
+    // Core counter for Answers table. Counts records for a user and a set of qids.
+    // If onlyCorrect=true, it adds {IsCorrect}=1 to the filter.
+    async function countAnswersForQids(userEmail, qids, onlyCorrect=false){
       if (!userEmail || !qids.length) return 0;
-      // Build OR({QuestionId}='a', {QuestionId}='b', ...)
-      const orParts = qids.slice(0, 50).map(q => `{QuestionId}='${String(q).replace(/'/g, "\\'")}'`); // Airtable OR max args ~100; keep modest
-      const url = new URL(baseUrl(AIR.A_TABLE));
-      url.searchParams.set('pageSize','100');
-      url.searchParams.set('filterByFormula', `AND({UserEmail}='${String(userEmail).replace(/'/g, "\\'")}', OR(${orParts.join(',')}))`);
-      let count = 0, offset;
-      do {
-        if (offset) url.searchParams.set('offset', offset);
-        const res = await fetch(url.toString(), { headers: h() });
-        if (!res.ok) throw new Error('Answers load failed: '+res.status);
-        const data = await res.json();
-        count += (data.records||[]).length;
-        offset = data.offset;
-        if (offset){
-          const u = new URL(baseUrl(AIR.A_TABLE));
-          u.searchParams.set('pageSize','100');
-          u.searchParams.set('filterByFormula', `AND({UserEmail}='${String(userEmail).replace(/'/g, "\\'")}', OR(${orParts.join(',')}))`);
-          url.search = u.search;
-        }
-      } while(offset);
-      return count;
+
+      const batches = chunk(qids.map(String), 50); // stay well under OR() arg limits
+      let totalCount = 0;
+
+      for (const batch of batches){
+        const orParts = batch.map(q => `{QuestionId}='${q.replace(/'/g, "\\'")}'`);
+        const conditions = [
+          `{UserEmail}='${String(userEmail).replace(/'/g, "\\'")}'`,
+          `OR(${orParts.join(',')})`
+        ];
+        if (onlyCorrect) conditions.unshift(`{IsCorrect}=1`);
+        const filter = `AND(${conditions.join(',')})`;
+
+        const url = new URL(baseUrl(AIR.A_TABLE));
+        url.searchParams.set('pageSize','100');
+        url.searchParams.set('filterByFormula', filter);
+
+        let offset;
+        do {
+          if (offset) url.searchParams.set('offset', offset);
+          const res = await fetch(url.toString(), { headers: h() });
+          if (!res.ok) throw new Error('Answers load failed: '+res.status);
+          const data = await res.json();
+          totalCount += (data.records||[]).length;
+          offset = data.offset;
+          if (offset){
+            const u = new URL(baseUrl(AIR.A_TABLE));
+            u.searchParams.set('pageSize','100');
+            u.searchParams.set('filterByFormula', filter);
+            url.search = u.search;
+          }
+        } while(offset);
+      }
+
+      return totalCount;
+    }
+
+    // Backward-compatible wrappers
+    async function fetchAnswerCountForQids(userEmail, qids){
+      return countAnswersForQids(userEmail, qids, /*onlyCorrect=*/false);
+    }
+    async function fetchCorrectCountForQids(userEmail, qids){
+      return countAnswersForQids(userEmail, qids, /*onlyCorrect=*/true);
     }
 
     function pct(a,b){ return b ? Math.round((a*100)/b) : 0; }
@@ -138,19 +172,29 @@ function h() {
         const arr = Array.from(byModule.values()).filter(m => !search || m.name.toLowerCase().includes(search));
         if (!arr.length){ list.innerHTML = '<div class="muted">No modules found.</div>'; return; }
 
-        // compute progress per module
+        // compute progress + correctness per module
         const cards = [];
         for (const m of arr){
           const total = m.qids.length;
-          const done = await fetchAnswerCountForQids(email, m.qids);
-          const per = pct(done, total);
+          const answered = await fetchAnswerCountForQids(email, m.qids);
+          const correct = await fetchCorrectCountForQids(email, m.qids);
+
+          // Progress (answered / total)
+          const perAnswered = pct(answered, total);
+          // Percentage Correct counts unanswered as wrong (denominator = total)
+          const perCorrect = pct(correct, total);
+
           cards.push(`<div class="card">
             <div class="hd">${m.name} <span class="pill">${total} question${total===1?'':'s'}</span></div>
             <div class="bd">
-              <div class="progress"><i style="width:${per}%"></i></div>
-              <div class="row" style="margin-top:8px">
+              <div class="stat"><span class="muted">Answered</span><b>${answered}/${total}</b></div>
+              <div class="progress"><i style="width:${perAnswered}%"></i></div>
+
+              <div class="stat" style="margin-top:10px"><span class="muted">Percentage Correct</span><b>${perCorrect}%</b></div>
+              <div class="progress correct"><i style="width:${perCorrect}%"></i></div>
+
+              <div class="row" style="margin-top:12px">
                 <button class="btn" onclick="window.location.href='index.html?module=${encodeURIComponent(m.name)}'">Open</button>
-                <span class="muted">${done}/${total} answered</span>
               </div>
             </div>
           </div>`);

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Training Admin – Questions</title>
+  <title>Training Admin – Questions & Assignments</title>
   <link rel="stylesheet" href="style.css">
   <style>
     /* Minimal add-ons that play nice with your existing style.css */
@@ -49,6 +49,9 @@
     .ghost { opacity:.8; }
     .chips { display:flex; gap:6px; flex-wrap: wrap; }
     .chip { padding:4px 8px; border:1px solid #2b3564; border-radius:999px; font-size:12px; cursor:pointer; }
+    /* Assignment checklist */
+    .checklist { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:10px; margin-top:8px; }
+    .check-item { display:flex; align-items:center; gap:8px; padding:8px 10px; border:1px solid #2b3564; border-radius:10px; background:#0b1435; }
   </style>
 </head>
 <body>
@@ -58,11 +61,13 @@
       <div class="title">Training Admin</div>
       <div class="row">
         <span class="pill">Questions</span>
+        <span class="pill">Assignments</span>
         <a class="btn btn-ghost" href="index.html">← Back</a>
       </div>
     </div>
   </header>
 
+  <!-- Search / flags -->
   <section class="card">
     <div class="toolbar">
       <input id="search" class="grow" placeholder="Search questions, IDs, slides…"/>
@@ -87,7 +92,7 @@
         </div>
         <input id="questionId" placeholder="QuestionId (auto if blank)" style="display: none;">
 
-        <!-- NEW: Module input UX -->
+        <!-- Module input UX -->
         <div class="row">
           <div style="flex:1">
             <label class="muted small" for="moduleSelect">Module (pick an existing value)</label>
@@ -150,6 +155,26 @@
       </div>
     </section>
   </div>
+
+  <!-- NEW: Assign Modules by Job Title -->
+  <section class="card" id="assignCard">
+    <h3 style="margin-top:0">Assign Modules by Job Title</h3>
+    <div class="row">
+      <div style="flex:1">
+        <label class="muted small" for="titleSelect">Title (from tblppx6qNXXNJL7ON → Title)</label>
+        <select id="titleSelect"></select>
+      </div>
+      <div>
+        <button id="btnReloadTitles" class="btn">Reload Titles</button>
+      </div>
+    </div>
+    <div id="moduleChecklist" class="checklist" style="margin-top:8px"></div>
+    <div class="row">
+      <button id="btnSaveAssignment" class="btn btn-ok">Save Assignment</button>
+      <button id="btnClearAssignment" class="btn btn-danger" type="button">Clear All</button>
+      <span id="assignStatus" class="muted small"></span>
+    </div>
+  </section>
 </div>
 
 <!-- tiny toast -->
