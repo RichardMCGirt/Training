@@ -19,7 +19,7 @@
     .row { display:flex; gap:10px; align-items:center; margin:8px 0; }
     .muted { color: #a5b0d6; }
     .pill { padding: 4px 10px; border:1px solid #2b3564; border-radius:999px; font-size:12px; }
-    .btn { padding:8px 12px; border:1px solid #2b3564; background:#152055; border-radius:10px; cursor:pointer; }
+    .btn { padding:8px 12px; border:1px solid #2b3564; background:#152055; border-radius:10px; cursor:pointer; color:#eaf0ff; }
     .btn-ghost { background:transparent; }
     .btn-danger { background:#341212; border-color:#5b1f1f; }
     .btn-ok { background:#11321f; border-color:#1d5e3a; }
@@ -49,9 +49,21 @@
     .ghost { opacity:.8; }
     .chips { display:flex; gap:6px; flex-wrap: wrap; }
     .chip { padding:4px 8px; border:1px solid #2b3564; border-radius:999px; font-size:12px; cursor:pointer; }
+
     /* Assignment checklist */
     .checklist { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:10px; margin-top:8px; }
     .check-item { display:flex; align-items:center; gap:8px; padding:8px 10px; border:1px solid #2b3564; border-radius:10px; background:#0b1435; display: none; }
+
+    /* Module accordion */
+    .mods { display:grid; gap:8px; }
+    .mod { border:1px solid #2b3564; border-radius:12px; background:#0b1435; }
+    .mod-head { display:flex; justify-content:space-between; align-items:center; width:100%; text-align:left; padding:10px 12px; border:0; background:transparent; color:#eaf0ff; cursor:pointer; }
+    .mod-head:hover { background:#0e1638; }
+    .mod-count { font-size:12px; opacity:.9; padding:2px 8px; border:1px solid #2b3564; border-radius:999px; }
+    .mod-body { padding:8px 12px; border-top:1px solid #22306b; }
+    .qline { display:flex; justify-content:space-between; gap:10px; padding:8px 0; border-bottom:1px solid #1a2458; }
+    .qline:last-child { border-bottom:0; }
+    .qtext { color:#cfd7ff; }
   </style>
 </head>
 <body>
@@ -70,7 +82,7 @@
   <!-- Search / flags -->
   <section class="card">
     <div class="toolbar">
-      <input id="search" class="grow" placeholder="Search questions, IDs, slides…"/>
+      <input id="search" class="grow" placeholder="Search modules or questions…"/>
       <div class="filters">
         <label class="hint"><input type="checkbox" id="fltActive" checked> Active</label>
         <label class="hint"><input type="checkbox" id="fltInactive"> Inactive</label>
@@ -126,32 +138,14 @@
       </div>
     </section>
 
-    <!-- List -->
+    <!-- Grouped Modules & Questions (collapsible) -->
     <section class="card">
-      <h3 style="margin-top:0">Questions</h3>
-      <table class="table">
-        <thead>
-          <tr>
-            <th>Order</th>
-            <th>Question</th>
-            <th>Correct</th>
-            <th>Module</th>
-            <th>Slide</th>
-            <th>ID</th>
-            <th class="nowrap">Flags</th>
-            <th class="nowrap">Actions</th>
-          </tr>
-        </thead>
-        <tbody id="questionsBody">
-          <tr><td colspan="8" class="muted">Press <b>Refresh</b> to load.</td></tr>
-        </tbody>
-      </table>
+      <h3 style="margin-top:0">Modules</h3>
+      <div id="moduleGroups" class="mods">
+        <div class="muted small">Press <b>Refresh</b> to load.</div>
+      </div>
       <div class="row" style="justify-content: space-between;">
         <div class="small muted" id="listStatus"></div>
-        <div class="row">
-          <button id="prevPage" class="btn btn-ghost" disabled>Prev</button>
-          <button id="nextPage" class="btn btn-ghost" disabled>Next</button>
-        </div>
       </div>
     </section>
   </div>
