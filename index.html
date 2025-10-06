@@ -35,6 +35,12 @@
     .row { display:flex; align-items:center; gap:8px; flex-wrap: wrap; }
     #bar { height:8px; background:#e5e7eb; border-radius:999px; overflow:hidden; margin: 8px 0 0; }
     #bar > i { display:block; height:100%; width:0%; background: var(--accent); }
+
+    /* Hide the Load button */
+    #btnLoad, #presentationId { display:none !important; }
+
+    /* Retry button row */
+    #retryRow { display:none; margin-top:12px; }
   </style>
   <script src="./auth.js"></script>
 </head>
@@ -44,9 +50,9 @@
 
     <div class="controls">
       <input id="presentationId" type="text" placeholder="Google Slides ID (e.g., 1lsNam3...)"/>
+      <button class="btn" onclick="window.location.href='dashboard.html'">Back to Dashboard</button>
       <input id="userEmail" type="text" placeholder="Your email (for saving answers)" />
       <button class="btn" id="btnLoad" onclick="onLoadDeckClick()">Load</button>
-      <button class="btn" onclick="window.location.href='dashboard.html'">Back to Dashboard</button>
 
       <span class="muted">Navigate:</span>
       <button id="prevBtn" class="btn" disabled>&larr; Prev</button>
@@ -72,6 +78,9 @@
           <div class="row" style="margin-top:10px">
             <button class="btn" id="btnSubmit">Submit answer</button>
             <span id="saveStatus" class="muted"></span>
+          </div>
+          <div class="row" id="retryRow">
+            <button class="btn" id="btnRetry">Retry from start</button>
           </div>
         </div>
       </section>

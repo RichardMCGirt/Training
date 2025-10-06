@@ -2,8 +2,8 @@
  * Slides + Airtable Quiz (slideshow + questions)
  * Questions Table: tblpvVpIJnkWco25E (Active=1, Order asc)
  * Answers  Table: tblkz5HyZGpgO093S (UPSERT by UserEmail + QuestionId)
- * Supports Type = "MC" and "FITB"
- * Robust 422 handling + field-name mapping to fit your Answers schema.
+ * ---------------
+ * Supports MC and FITB, Wrong Attempts counting, and "retake" mode.
  * ========================================================================== */
 
 /* ------------------ Airtable (read-only for questions) --------------------- */
@@ -18,26 +18,6 @@ const AIRTABLE_ANS = {
   API_KEY: AIRTABLE_Q.API_KEY,
   BASE_ID: AIRTABLE_Q.BASE_ID,
   TABLE_ID: "tblkz5HyZGpgO093S"
-};
-
-/* ------------------ Answers table field mapping ---------------------------- */
-/* If your Answers table uses different column names, change them here.
- * Set a key to null to skip writing it.
- */
-const ANS_FIELDS = {
-  userEmail:        "UserEmail",
-  questionId:       "QuestionId",
-  presentationId:   "PresentationId",
-  slideId:          "Slide ID",
-  question:         "Question",        // optional
-  answer:           "Answer",
-  correctAnswer:    "CorrectAnswer",   // optional
-  isCorrect:        "IsCorrect",       // checkbox (preferred). Set to null if you don't have it.
-  result:           null,              // Single select "Correct"/"Wrong" (set to "Result" if you use it)
-  timestamp:        "Timestamp",       // text or date
-  type:             "Type",            // optional text
-  wrongAttempts:    "Wrong Attempts",  // optional number
-  lastWrongAt:      "Last Wrong At"    // optional date
 };
 
 /* ------------------ DOM references ---------------------------------------- */
@@ -55,6 +35,8 @@ const el = {
   counter: document.getElementById("counter"),
   bar: document.getElementById("bar"),
   barInner: document.getElementById("barInner"),
+  btnRetry: document.getElementById("btnRetry"),
+  retryRow: document.getElementById("retryRow"),
 };
 
 /* ------------------ Utils -------------------------------------------------- */
@@ -69,7 +51,8 @@ function pulse(msg, cls="warn"){
 }
 function setProgress(pct){
   if (!el.barInner) return;
-  el.barInner.style.width = Math.max(0, Math.min(100, pct|0)) + "%";
+  const n = Math.max(0, Math.min(100, pct|0));
+  el.barInner.style.width = n + "%";
 }
 
 /* ------------------ FITB correctness -------------------------------------- */
@@ -85,7 +68,7 @@ function isFitbCorrect(userInput, answers, { useRegex=false, caseSensitive=false
         const flags = caseSensitive ? "" : "i";
         const re = new RegExp(ans, flags);
         if (re.test(rawUser)) return true;
-      } catch { /* bad pattern, ignore */ }
+      } catch { /* ignore bad pattern */ }
     } else {
       const cmp = caseSensitive ? ans.trim() : ans.trim().toLowerCase();
       if (input === cmp) return true;
@@ -97,12 +80,15 @@ function isFitbCorrect(userInput, answers, { useRegex=false, caseSensitive=false
 /* ------------------ State -------------------------------------------------- */
 const state = {
   presentationId: "",
-  slides: [],
+  slides: [],            // [{objectId, title}, ...]
   i: 0,
-  answers: {},
-  quizByIndex: {},
-  quizBySlideId: {},
+  answers: {},           // { questionId: {answer,isCorrect} }
+  quizByIndex: {},       // 0-based index → quiz
+  quizBySlideId: {},     // slide.objectId → quiz
 };
+// Retake mode: when index.html is opened with ?reset=1 we don't prefill prior answers or prior progress
+const params = new URLSearchParams(location.search);
+state.retake = (params.get('reset') === '1'); // true = do NOT show prior selections/inputs or resume progress
 
 /* ------------------ Airtable helpers -------------------------------------- */
 function qHeaders(){ return { "Authorization": `Bearer ${AIRTABLE_Q.API_KEY}`, "Content-Type": "application/json" }; }
@@ -111,21 +97,62 @@ const qBaseUrl = () => `https://api.airtable.com/v0/${AIRTABLE_Q.BASE_ID}/${enco
 function aHeaders(){ return { "Authorization": `Bearer ${AIRTABLE_ANS.API_KEY}`, "Content-Type": "application/json" }; }
 const aBaseUrl = () => `https://api.airtable.com/v0/${AIRTABLE_ANS.BASE_ID}/${encodeURIComponent(AIRTABLE_ANS.TABLE_ID)}`;
 
-function f(name){ return ANS_FIELDS[name]; } // field alias helper
-
 /* Find existing answer record by (UserEmail & QuestionId) */
 async function findAnswerRecord(userEmail, questionId){
   const url = new URL(aBaseUrl());
-  const E = s => String(s||"").replace(/'/g, "\\'");
-  const fEmail = f("userEmail");
-  const fQid   = f("questionId");
-  if (!fEmail || !fQid) return null; // cannot filter without both
-  url.searchParams.set("filterByFormula", `AND({${fEmail}}='${E(userEmail)}',{${fQid}}='${E(questionId)}')`);
+  const e = s => String(s||"").replace(/'/g, "\\'");
+  url.searchParams.set("filterByFormula", `AND({UserEmail}='${e(userEmail)}',{QuestionId}='${e(questionId)}')`);
   url.searchParams.set("pageSize", "1");
   const res = await fetch(url.toString(), { headers: aHeaders() });
   if (!res.ok) throw new Error(`Find failed: HTTP ${res.status}`);
   const data = await res.json();
   return (data.records && data.records[0]) ? data.records[0] : null;
+}
+
+/* Upsert + Wrong Attempts (overwrite count with +1 on wrong) */
+const FIELD_WRONG_ATTEMPTS = "Wrong Attempts";
+const FIELD_LAST_WRONG_AT  = "Last Wrong At";
+
+async function upsertAnswerRecordWithWrongCount(baseFields) {
+  if (!baseFields?.UserEmail || !baseFields?.QuestionId)
+    throw new Error("Missing required fields: UserEmail and QuestionId");
+
+  const existing = await findAnswerRecord(baseFields.UserEmail, baseFields.QuestionId);
+
+  const isWrong = baseFields.IsCorrect === false;
+  const prevWrong = existing?.fields?.[FIELD_WRONG_ATTEMPTS] || 0;
+  const nextWrong = isWrong ? prevWrong + 1 : prevWrong;
+
+  const fieldsToSave = {
+    ...baseFields,
+    [FIELD_WRONG_ATTEMPTS]: nextWrong,
+  };
+  if (isWrong && FIELD_LAST_WRONG_AT)
+    fieldsToSave[FIELD_LAST_WRONG_AT] = new Date().toISOString();
+
+  if (existing) {
+    const res = await fetch(aBaseUrl(), {
+      method: "PATCH",
+      headers: aHeaders(),
+      body: JSON.stringify({
+        records: [{ id: existing.id, fields: fieldsToSave }],
+        typecast: true,
+      }),
+    });
+    if (!res.ok) throw new Error(`Update failed: HTTP ${res.status}`);
+    return res.json();
+  } else {
+    const res = await fetch(aBaseUrl(), {
+      method: "POST",
+      headers: aHeaders(),
+      body: JSON.stringify({
+        records: [{ fields: fieldsToSave }],
+        typecast: true,
+      }),
+    });
+    if (!res.ok) throw new Error(`Create failed: HTTP ${res.status}`);
+    return res.json();
+  }
 }
 
 /* ------------------ Fetch Questions from Airtable ------------------------- */
@@ -160,40 +187,40 @@ async function fetchQuestionsFromAirtable() {
   const quizBySlideId = {};
 
   all.forEach(rec => {
-    const flds = rec.fields || {};
-    const order = Number(flds["Order"] ?? NaN);
+    const f = rec.fields || {};
+    const order = Number(f["Order"] ?? NaN);
 
-    // MC fields
-    const optsRaw = (flds["Options (JSON)"] || "[]");
+    // Parse MC fields
+    const optsRaw = (f["Options (JSON)"] || "[]");
     let options = [];
     try { options = Array.isArray(optsRaw) ? optsRaw : JSON.parse(optsRaw); } catch {}
 
-    // FITB fields
-    const fitbRaw = (flds["FITB Answers (JSON)"] || "[]");
+    // Parse FITB fields
+    const fitbRaw = (f["FITB Answers (JSON)"] || "[]");
     let fitbAnswers = [];
     try { fitbAnswers = Array.isArray(fitbRaw) ? fitbRaw : JSON.parse(fitbRaw); } catch {}
-    const fitbUseRegex = !!flds["FITB Use Regex"];
-    const fitbCaseSensitive = !!flds["FITB Case Sensitive"];
+    const fitbUseRegex = !!f["FITB Use Regex"];
+    const fitbCaseSensitive = !!f["FITB Case Sensitive"];
 
-    const type = String(flds["Type"] || (options?.length ? "MC" : (fitbAnswers?.length ? "FITB" : "MC"))).toUpperCase();
+    const type = String(f["Type"] || (options?.length ? "MC" : (fitbAnswers?.length ? "FITB" : "MC"))).toUpperCase();
 
     const q = {
-      questionId: flds["QuestionId"] || `q_${rec.id}`,
-      question: flds["Question"] || "",
-      required: !!flds["Required"],
+      questionId: f["QuestionId"] || `q_${rec.id}`,
+      question: f["Question"] || "",
+      required: !!f["Required"],
       type,
       options: options || [],
-      correct: flds["Correct"] || "",
+      correct: f["Correct"] || "",
       fitbAnswers: fitbAnswers || [],
       fitbUseRegex,
       fitbCaseSensitive
     };
 
-    const slideId = flds["Slide ID"] || "";
+    const slideId = f["Slide ID"] || "";
     if (slideId) quizBySlideId[slideId] = q;
 
     if (!Number.isNaN(order)) {
-      const idx = Math.max(0, order - 1); // 1-based → 0-based
+      const idx = Math.max(0, order - 1);
       quizByIndex[idx] = q;
     }
   });
@@ -224,23 +251,27 @@ function currentQuizForIndex(i){
 
 function renderQuiz(quiz) {
   if (!el.quizBox) return;
+
   if (!quiz) {
     el.quizBox.innerHTML = `<div class="muted">No question for this slide.</div>`;
     if (el.btnSubmit) el.btnSubmit.disabled = true;
     return;
   }
-  const priorAns = (state.answers[quiz.questionId]?.answer) || "";
+
+  // Use prior answer only when NOT in retake mode
+  const priorAns = state.retake ? "" : (state.answers[quiz.questionId]?.answer || "");
 
   if (quiz.type === "MC") {
     const opts = (quiz.options || [])
       .map(o => {
-        const checked = (o === priorAns) ? "checked" : "";
+        const checked = (!state.retake && o === priorAns) ? "checked" : "";
         return `<label class="opt">
-          <input type="radio" name="opt" value="${att(o)}" ${checked}/>
+          <input type="radio" name="opt" value="${att(o)}" ${checked} autocomplete="off"/>
           <div><strong>${esc(o)}</strong></div>
         </label>`;
       })
       .join("");
+
     el.quizBox.innerHTML = `
       <div><strong>${esc(quiz.question)}</strong> ${quiz.required ? `<span class="pill">Required</span>` : ""}</div>
       <div>${opts || `<div class="muted">No options set.</div>`}</div>
@@ -251,11 +282,11 @@ function renderQuiz(quiz) {
   }
 
   // FITB
-  const value = att(priorAns);
+  const valueAttr = state.retake ? "" : att(priorAns);
   el.quizBox.innerHTML = `
     <div><strong>${esc(quiz.question)}</strong> ${quiz.required ? `<span class="pill">Required</span>` : ""}</div>
     <div style="margin-top:10px">
-      <input id="fitbInput" type="text" placeholder="Type your answer..." value="${value}" style="width:100%;padding:10px;border:1px solid #e5e7eb;border-radius:8px;background:#fafafa" />
+      <input id="fitbInput" type="text" placeholder="Type your answer..." value="${valueAttr}" style="width:100%;padding:10px;border:1px solid #e5e7eb;border-radius:8px;background:#fafafa" />
       <div class="muted" style="font-size:12px;margin-top:6px">
         ${quiz.fitbUseRegex ? "Regex enabled." : "Exact match"} ${quiz.fitbCaseSensitive ? "(case sensitive)" : "(case insensitive)"}.
       </div>
@@ -286,6 +317,16 @@ function getUserAnswer(quiz) {
   }
 }
 
+function isAllAnswered(){
+  const total = getQuestionCount();
+  let count = 0;
+  for (let i = 0; i < total; i++){
+    const q = currentQuizForIndex(i);
+    if (q && state.answers[q.questionId]) count++;
+  }
+  return total > 0 && count >= total;
+}
+
 async function go(delta) {
   const quiz = currentQuizForIndex(state.i);
   if (quiz && quiz.required) {
@@ -294,6 +335,14 @@ async function go(delta) {
     if (!cur && !has) return pulse("Answer required before continuing.", "warn");
   }
 
+  // In retake mode: do NOT consult/merge prior answers; just move linearly.
+  if (state.retake) {
+    state.i = clamp(state.i + delta, 0, state.slides.length - 1);
+    render();
+    return;
+  }
+
+  // Normal mode (resume-aware)
   state.i = clamp(state.i + delta, 0, state.slides.length - 1);
 
   try {
@@ -303,6 +352,7 @@ async function go(delta) {
     );
     state.answers = Object.assign({}, prior);
 
+    // If we land on an already-answered slide, jump forward to next unanswered
     const q = currentQuizForIndex(state.i);
     if (q && state.answers[q.questionId]) {
       const next = nextUnansweredIndex();
@@ -318,17 +368,13 @@ async function go(delta) {
 if (el.prevBtn) el.prevBtn.addEventListener("click", () => { go(-1); });
 if (el.nextBtn) el.nextBtn.addEventListener("click", () => { go(+1); });
 
-/* ---------- Resume logic: load prior answers and jump to next unanswered --- */
+/* ---------- Resume logic (skipped in retake mode) -------------------------- */
 async function loadExistingAnswersForUser(presentationId, userEmail){
   if (!userEmail) return {};
   const url = new URL(aBaseUrl());
-  const E = s => String(s||"").replace(/'/g, "\\'");
-  const fEmail = f("userEmail");
-  const fPres  = f("presentationId");
-  if (!fEmail || !fPres) return {};
-  url.searchParams.set("filterByFormula", `AND({${fEmail}}='${E(userEmail)}',{${fPres}}='${E(presentationId)}')`);
+  const e = s => String(s||"").replace(/'/g, "\\'");
+  url.searchParams.set("filterByFormula", `AND({UserEmail}='${e(userEmail)}',{PresentationId}='${e(presentationId)}')`);
   url.searchParams.set("pageSize", "100");
-
   let all = [];
   let offset;
   do {
@@ -340,30 +386,18 @@ async function loadExistingAnswersForUser(presentationId, userEmail){
     offset = data.offset;
     if (offset) {
       const u = new URL(aBaseUrl());
+      u.searchParams.set("filterByFormula", `AND({UserEmail}='${e(userEmail)}',{PresentationId}='${e(presentationId)}')`);
       u.searchParams.set("pageSize", "100");
-      u.searchParams.set("filterByFormula", `AND({${fEmail}}='${E(userEmail)}',{${fPres}}='${E(presentationId)}')`);
       url.search = u.search;
     }
   } while (offset);
 
   const map = {};
-  const fAns  = f("answer");
-  const fIC   = f("isCorrect");
-  const fRes  = f("result");
-  const fQid  = f("questionId");
-
   for (const r of all) {
-    const v = r.fields || {};
-    const qid = v[fQid];
-    if (!qid) continue;
-    const ans = fAns ? v[fAns] : "";
-    let isCorrect = false;
-    if (fIC && typeof v[fIC] !== "undefined") {
-      isCorrect = !!v[fIC];
-    } else if (fRes && typeof v[fRes] === "string") {
-      isCorrect = String(v[fRes]).toLowerCase() === "correct";
+    const f = r.fields || {};
+    if (f.QuestionId) {
+      map[f.QuestionId] = { answer: f.Answer, isCorrect: !!f.IsCorrect };
     }
-    map[qid] = { answer: ans, isCorrect };
   }
   return map;
 }
@@ -380,179 +414,12 @@ function nextUnansweredIndex(){
   return 0; // all answered: start at beginning
 }
 
-function saveLocalProgress(){
-  const email = (el.userEmail?.value || "").trim();
-  if (!email || !state.presentationId) return;
-  const answered = Object.keys(state.answers).length;
-  const key = `progress:${email}:${state.presentationId}`;
-  localStorage.setItem(key, JSON.stringify({ answered, ts: Date.now() }));
-}
-
-/* =================== Upsert with 422 fallback + mapping ==================== */
-async function upsertAnswerRecordWithWrongCount(base) {
-  const email = (el.userEmail?.value || "").trim();
-  if (!email) throw new Error("Missing UserEmail");
-  const qid = base.questionId;
-  if (!qid) throw new Error("Missing QuestionId");
-
-  const nowIso = new Date().toISOString();
-  const isWrong = base.isCorrect === false;
-
-  // Build "full" fields according to mapping
-  const full = {};
-  if (f("userEmail"))      full[f("userEmail")]      = email;
-  if (f("questionId"))     full[f("questionId")]     = qid;
-  if (f("presentationId")) full[f("presentationId")] = state.presentationId || "";
-  if (f("slideId"))        full[f("slideId")]        = base.slideId || "";
-  if (f("question"))       full[f("question")]       = base.question || "";
-  if (f("answer"))         full[f("answer")]         = base.answer ?? "";
-  if (f("correctAnswer"))  full[f("correctAnswer")]  = base.correctAnswer ?? "";
-  if (f("type"))           full[f("type")]           = base.type || "";
-  if (f("timestamp"))      full[f("timestamp")]      = nowIso;
-
-  if (f("isCorrect")) full[f("isCorrect")] = !!base.isCorrect;
-  if (f("result"))    full[f("result")]    = base.isCorrect ? "Correct" : "Wrong";
-  if (f("wrongAttempts")) full[f("wrongAttempts")] = base.wrongAttempts ?? 0;
-  if (f("lastWrongAt") && isWrong) full[f("lastWrongAt")] = nowIso;
-
-  // Minimal, very safe fallback
-  const minimal = {};
-  if (f("userEmail"))      minimal[f("userEmail")]      = email;
-  if (f("questionId"))     minimal[f("questionId")]     = qid;
-  if (f("presentationId")) minimal[f("presentationId")] = state.presentationId || "";
-  if (f("slideId"))        minimal[f("slideId")]        = base.slideId || "";
-  if (f("answer"))         minimal[f("answer")]         = base.answer ?? "";
-  if (f("timestamp"))      minimal[f("timestamp")]      = nowIso;
-  // Prefer result select if isCorrect field is absent
-  if (f("isCorrect"))      minimal[f("isCorrect")]      = !!base.isCorrect;
-  else if (f("result"))    minimal[f("result")]         = base.isCorrect ? "Correct" : "Wrong";
-
-  const existing = await findAnswerRecord(email, qid);
-
-  async function doCreate(fields) {
-    const res = await fetch(aBaseUrl(), {
-      method: "POST",
-      headers: aHeaders(),
-      body: JSON.stringify({ records: [{ fields }], typecast: true })
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      console.error("[Airtable create] HTTP", res.status, body);
-      if (res.status === 422) throw new Error("422");
-      throw new Error(`Create failed: HTTP ${res.status}`);
-    }
-    return res.json();
-  }
-
-  async function doPatch(id, fields) {
-    const res = await fetch(aBaseUrl(), {
-      method: "PATCH",
-      headers: aHeaders(),
-      body: JSON.stringify({ records: [{ id, fields }], typecast: true })
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      console.error("[Airtable update] HTTP", res.status, body);
-      if (res.status === 422) throw new Error("422");
-      throw new Error(`Update failed: HTTP ${res.status}`);
-    }
-    return res.json();
-  }
-
-  try {
-    if (existing) return await doPatch(existing.id, full);
-    return await doCreate(full);
-  } catch (e) {
-    if (e.message !== "422") throw e;
-    // retry with minimal
-    if (existing) return await doPatch(existing.id, minimal);
-    return await doCreate(minimal);
-  }
-}
-
-/* ------------------ Submit ------------------------------------------------- */
-async function submitAnswer() {
-  const slide = state.slides[state.i];
-  const quiz  = currentQuizForIndex(state.i);
-  if (!quiz) return;
-
-  const answerRaw = getUserAnswer(quiz);
-  const answer = String(answerRaw || "").trim();
-  if (!answer) return pulse("Provide an answer.", "warn");
-
-  // Correctness
-  let isCorrect = false;
-  if (quiz.type === "MC") {
-    isCorrect = !!(quiz.correct && answer === String(quiz.correct).trim());
-  } else {
-    isCorrect = isFitbCorrect(
-      answerRaw,
-      quiz.fitbAnswers,
-      { useRegex: !!quiz.fitbUseRegex, caseSensitive: !!quiz.fitbCaseSensitive }
-    );
-  }
-
-  // Update local state & navigate
-  state.answers[quiz.questionId] = { answer, isCorrect };
-  state.i = nextUnansweredIndex();
-  render();
-
-  const payload = {
-    slideId: slide?.objectId || "",
-    questionId: quiz.questionId,
-    question: quiz.question,
-    answer,
-    correctAnswer: quiz.type === "MC" ? quiz.correct : (quiz.fitbAnswers || []).join(" | "),
-    isCorrect,
-    type: quiz.type
-  };
-
-  // Optional: your custom save (webhook or helper) if present
-  try {
-    if (typeof upsertAirtableBySlideAndEmail === "function" &&
-        window.AIRTABLE_API_KEY && window.AIRTABLE_BASE_ID && window.AIRTABLE_TABLE) {
-      await upsertAirtableBySlideAndEmail(payload.slideId, (el.userEmail?.value||"").trim(), {
-        PresentationId: state.presentationId,
-        "Slide ID": payload.slideId,
-        QuestionId: payload.questionId,
-        Answer: payload.answer,
-        IsCorrect: payload.isCorrect,
-        UserEmail: (el.userEmail?.value||"").trim(),
-        Timestamp: new Date().toISOString()
-      });
-    } else if (window.AIRTABLE_WEBHOOK_URL) {
-      await fetch(window.AIRTABLE_WEBHOOK_URL, {
-        method:"POST",
-        headers:{ "Content-Type":"application/json" },
-        body: JSON.stringify({
-          ...payload,
-          userEmail: (el.userEmail?.value||"").trim(),
-          presentationId: state.presentationId,
-          timestamp: new Date().toISOString()
-        })
-      });
-    }
-  } catch (e) { console.warn("[primary save] failed:", e); }
-
-  // Canonical save → our Answers table (with 422 fallback)
-  try {
-    await upsertAnswerRecordWithWrongCount(payload);
-    pulse("Saved.", "ok");
-    saveLocalProgress();
-  } catch (err) {
-    console.error(err);
-    pulse("Save failed.", "bad");
-  }
-}
-
-/* Wire submit */
-if (el.btnSubmit) { el.btnSubmit.removeEventListener("click", submitAnswer); el.btnSubmit.addEventListener("click", submitAnswer); }
-
-/* Ensure virtual slides exist to match ordered questions if needed */
 function getQuestionCount(){
   const idxs = Object.keys(state.quizByIndex).map(k => parseInt(k, 10)).filter(n => !Number.isNaN(n));
-  return idxs.length ? (Math.max(...idxs) + 1) : 0;
+  const byIndexCount = idxs.length ? (Math.max(...idxs) + 1) : 0;
+  return Math.max(byIndexCount, 0);
 }
+
 function ensureSlidesForQuestions(){
   const need = getQuestionCount();
   if (!Array.isArray(state.slides)) state.slides = [];
@@ -572,35 +439,63 @@ async function onDeckLoaded(presentationId, slidesArray){
 
   showEmbed(presentationId);
 
-  try { await fetchQuestionsFromAirtable(); }
-  catch (e) { console.error("Failed to load questions:", e); pulse("Could not load questions.", "bad"); }
+  try {
+    await fetchQuestionsFromAirtable();
+  } catch (e) {
+    console.error("Failed to fetch questions:", e);
+    pulse("Could not load questions.", "bad");
+  }
 
   ensureSlidesForQuestions();
 
-  try {
-    const prior = await loadExistingAnswersForUser(
-      state.presentationId,
-      (el.userEmail?.value||localStorage.getItem('trainingEmail')||'').trim()
-    );
-    state.answers = Object.assign({}, prior);
-  } catch(e){ console.warn('Resume load failed', e); }
+  if (el.prevBtn) el.prevBtn.disabled = state.i <= 0;
+  if (el.nextBtn) el.nextBtn.disabled = state.slides.length <= 1;
 
-  state.i = nextUnansweredIndex();
+  // RETAKE MODE: do NOT load/merge prior answers; start fresh at Q1
+  if (state.retake) {
+    state.answers = {};
+  } else {
+    try {
+      const prior = await loadExistingAnswersForUser(
+        state.presentationId,
+        (el.userEmail?.value||localStorage.getItem('trainingEmail')||'').trim()
+      );
+      state.answers = Object.assign({}, prior);
+      state.i = nextUnansweredIndex(); // only in normal mode
+    } catch(e){ console.warn('Resume load failed', e); }
+  }
+
+  // Wire Retry button
+  if (el.btnRetry) {
+    el.btnRetry.onclick = () => {
+      const pid = state.presentationId || (el.presentationIdInput?.value || "");
+      if (!pid) return;
+      const url = new URL(location.href);
+      url.searchParams.set("presentationId", pid);
+      url.searchParams.set("reset", "1");
+      // keep same email in localStorage; just navigate
+      location.href = url.toString();
+    };
+  }
+
   render();
 }
 
-/* Custom event hook */
+/* If another script fires this custom event, we hook in */
 document.addEventListener("deck:loaded", (ev) => {
   const { id, slides } = (ev.detail || {});
   onDeckLoaded(id, slides);
 });
 
-/* Legacy entry point used by index.html / auto-load */
+/* ------------------ Legacy entry point used by index.html / auto-load ------ */
 window.onLoadDeckClick = async function(evOrId){
   try{
     const maybeId = typeof evOrId === "string" ? evOrId : "";
     const id = maybeId || (el.presentationIdInput && el.presentationIdInput.value) || "";
-    if (!id) return;
+    if (!id) {
+      console.warn("[deck] No presentationId provided.");
+      return;
+    }
     await onDeckLoaded(id, /* slides */ null);
     try { document.dispatchEvent(new CustomEvent("deck:loaded", { detail: { id, slides: state.slides } })); } catch {}
   } catch(err){
@@ -608,8 +503,136 @@ window.onLoadDeckClick = async function(evOrId){
   }
 };
 
-/* Keyboard nav */
+/* Keyboard navigation convenience */
 window.addEventListener("keydown", (e) => {
   if (e.key === "ArrowLeft") { try { go(-1); } catch{} }
   if (e.key === "ArrowRight") { try { go(+1); } catch{} }
 });
+
+/* ------------------ Submit + save ----------------------------------------- */
+async function submitAnswer() {
+  const slide = state.slides[state.i];
+  const quiz  = (function(){
+    const slideQ = currentQuizForIndex(state.i);
+    return slideQ || null;
+  })();
+
+  if (!quiz) return;
+
+  const answerRaw = getUserAnswer(quiz);
+  const answer = String(answerRaw || "").trim();
+  if (!answer) return pulse("Provide an answer.", "warn");
+
+  // Correctness
+  let isCorrect = false;
+  if (quiz.type === "MC") {
+    isCorrect = !!(quiz.correct && answer === String(quiz.correct).trim());
+  } else {
+    isCorrect = isFitbCorrect(
+      answerRaw,
+      quiz.fitbAnswers,
+      { useRegex: !!quiz.fitbUseRegex, caseSensitive: !!quiz.fitbCaseSensitive }
+    );
+  }
+
+  // Update local state & advance immediately
+  state.answers[quiz.questionId] = { answer, isCorrect };
+
+  // In retake mode: linear next slide, no resume/merge, no jumping
+  if (state.retake) {
+    state.i = clamp(state.i + 1, 0, state.slides.length - 1);
+    render();
+
+    // Show Retry if all answered
+    if (isAllAnswered() && el.retryRow) el.retryRow.style.display = "flex";
+  } else {
+    // Normal mode with resume awareness
+    state.i = clamp(state.i + 1, 0, state.slides.length - 1);
+    try {
+      const prior = await loadExistingAnswersForUser(
+        state.presentationId,
+        (el.userEmail?.value || localStorage.getItem('trainingEmail') || '').trim()
+      );
+      state.answers = Object.assign({}, prior, state.answers);
+    } catch (e) {
+      console.warn('Resume load failed', e);
+    }
+    state.i = nextUnansweredIndex();
+    render();
+
+    if (isAllAnswered() && el.retryRow) el.retryRow.style.display = "flex";
+  }
+
+  const payload = {
+    userEmail: (el.userEmail?.value || "").trim(),
+    presentationId: state.presentationId,
+    slideId: slide?.objectId || "",
+    questionId: quiz.questionId,
+    question: quiz.question,
+    answer,
+    correctAnswer: quiz.type === "MC" ? quiz.correct : (quiz.fitbAnswers || []).join(" | "),
+    isCorrect,
+    result: isCorrect ? "Correct" : "Wrong",
+    timestamp: new Date().toISOString(),
+    Type: quiz.type
+  };
+
+  // Optional primary save path (webhook/custom)
+  try {
+    if (typeof upsertAirtableBySlideAndEmail === "function" &&
+        window.AIRTABLE_API_KEY && window.AIRTABLE_BASE_ID && window.AIRTABLE_TABLE) {
+      await upsertAirtableBySlideAndEmail(payload.slideId, payload.userEmail, {
+        PresentationId: payload.presentationId,
+        "Slide ID": payload.slideId,
+        QuestionId: payload.questionId,
+        Answer: payload.answer,
+        IsCorrect: payload.isCorrect,
+        UserEmail: payload.userEmail,
+        Timestamp: payload.timestamp
+      });
+    } else if (window.AIRTABLE_WEBHOOK_URL) {
+      await fetch(window.AIRTABLE_WEBHOOK_URL, {
+        method:"POST",
+        headers:{ "Content-Type":"application/json" },
+        body: JSON.stringify(payload)
+      });
+    }
+  } catch (e) {
+    console.warn("[primary save] failed:", e);
+  }
+
+  // Authoritative upsert with wrong attempts
+  try {
+    await upsertAnswerRecordWithWrongCount({
+      UserEmail: payload.userEmail,
+      PresentationId: payload.presentationId,
+      "Slide ID": payload.slideId,
+      QuestionId: payload.questionId,
+      Question: payload.question,
+      Answer: payload.answer,
+      CorrectAnswer: payload.correctAnswer,
+      IsCorrect: payload.isCorrect,
+      Result: payload.result,
+      Timestamp: payload.timestamp,
+      Type: payload.Type
+    });
+    pulse("Saved.", "ok");
+    saveLocalProgress();
+  } catch (err) {
+    console.error(err);
+    pulse("Save failed.", "bad");
+  }
+}
+
+if (el.btnSubmit) el.btnSubmit.removeEventListener("click", submitAnswer);
+if (el.btnSubmit) el.btnSubmit.addEventListener("click", submitAnswer);
+
+/* ------------------ Local progress ---------------------------------------- */
+function saveLocalProgress(){
+  const email = (el.userEmail?.value || "").trim();
+  if (!email || !state.presentationId) return;
+  const answered = Object.keys(state.answers).length;
+  const total = getQuestionCount();
+  const key = `progress:${email}:${state.presentationId}`;
+  localStorage.setItem(key, JSON.stringify({ answered, total, ts: Date.now() }));
+}
