@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Training Admin – Questions</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    /* Minimal add-ons that play nice with your existing style.css */
+    :root{ --ok:#29c16b; --bad:#e05d5d; --soft:#1b254b; }
+    body { background: var(--bg, #0b1028); }
+    .wrap { max-width: var(--page-max, 1200px); margin: 0 auto; padding: 16px; }
+    header .title { font-size: 22px; font-weight: 700; }
+    .toolbar { display:flex; gap:10px; align-items:center; flex-wrap: wrap; }
+    .toolbar .grow { flex:1; }
+    .grid { display:grid; grid-template-columns: 1fr 1.2fr; gap:16px; }
+    @media (max-width: 980px){ .grid { grid-template-columns: 1fr; } }
+    .card { background: #0e1638; border: 1px solid #22306b; border-radius: 14px; padding: 14px; }
+    .row { display:flex; gap:10px; align-items:center; margin:8px 0; }
+    .muted { color: #a5b0d6; }
+    .pill { padding: 4px 10px; border:1px solid #2b3564; border-radius:999px; font-size:12px; }
+    .btn { padding:8px 12px; border:1px solid #2b3564; background:#152055; border-radius:10px; cursor:pointer; }
+    .btn-ghost { background:transparent; }
+    .btn-danger { background:#341212; border-color:#5b1f1f; }
+    .btn-ok { background:#11321f; border-color:#1d5e3a; }
+    .btn:disabled { opacity:.6; cursor:not-allowed; }
+    input[type="text"], input[type="number"], textarea { width:100%; padding:8px 10px; background:#0b1435; color:#eaf0ff; border:1px solid #22306b; border-radius:10px; }
+    textarea { min-height: 80px; resize: vertical; }
+    .qbox { display:grid; gap:8px; }
+    .options { display:flex; flex-direction:column; gap:8px; }
+    .opt { display:grid; grid-template-columns: 1fr auto auto auto; gap:8px; align-items:center; }
+    .opt .handle { cursor:ns-resize; user-select:none; padding:6px 8px; border:1px dashed #2b3564; border-radius:8px; }
+    .opt .mark { display:flex; align-items:center; gap:6px; }
+    .table { width:100%; border-collapse: collapse; }
+    .table th, .table td { padding:8px 10px; border-bottom:1px solid #22306b; vertical-align: top; }
+    .table th { text-align:left; color: var(--muted); font-weight:600; }
+    .nowrap { white-space: nowrap; }
+    .small { font-size:12px; opacity:.95; }
+    .badge { display:inline-block; padding:2px 8px; border:1px solid #2b3564; border-radius:999px; }
+    .flag { font-size: 11px; opacity:.9; }
+    .ok { color: var(--ok); }
+    .bad { color: var(--bad); }
+    .toast { position: fixed; right: 16px; bottom: 16px; background:#0e1638; border:1px solid #2b3564; padding:10px 12px; border-radius:12px; box-shadow: 0 6px 18px rgba(0,0,0,.35); display:none; }
+    .toast.show { display:block; animation: fade .2s ease-out; }
+    @keyframes fade { from{ opacity:0; transform: translateY(6px) } to{ opacity:1; transform: translateY(0) } }
+    .toolbar .filters { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .hint { font-size:12px; opacity:.8; }
+    .divider { height:1px; background:#22306b; margin:10px 0; }
+    .ghost { opacity:.8; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="row" style="justify-content: space-between;">
+      <div class="title">Training Admin</div>
+      <div class="row">
+        <span class="pill">Questions</span>
+        <a class="btn btn-ghost" href="index.html">← Back</a>
+      </div>
+    </div>
+  </header>
+
+  <section class="card">
+    <div class="toolbar">
+      <input id="search" class="grow" placeholder="Search questions, IDs, slides…"/>
+      <div class="filters">
+        <label class="hint"><input type="checkbox" id="fltActive" checked> Active</label>
+        <label class="hint"><input type="checkbox" id="fltInactive"> Inactive</label>
+        <button id="btnRefresh" class="btn">Refresh</button>
+        
+        <input id="fileImport" type="file" accept="application/json" style="display:none">
+      </div>
+    </div>
+  </section>
+
+  <div class="grid">
+    <!-- Editor -->
+    <section class="card" id="formCard">
+      <div class="row" style="justify-content: space-between;">
+        <h3 style="margin:0">Create / Edit</h3>
+      </div>
+      <div class="qbox">
+        <div class="row">
+   <input id="slideId" placeholder="Slide ID (optional, e.g., g123..._0_5)" style="display: none;">
+<input id="order" type="number" placeholder="Order" value="1" style="display: none;">
+</div>
+<input id="questionId" placeholder="QuestionId (auto if blank)" style="display: none;">
+
+        <textarea id="questionText" placeholder="Question text…"></textarea>
+
+        <div class="row" style="justify-content: space-between; align-items: flex-end;">
+          <div>
+            <div class="muted small">Options</div>
+          </div>
+          <div class="row">
+            <button id="btnAddOption" class="btn btn-ghost" type="button">+ Add option</button>
+            <button id="btnClearOptions" class="btn btn-ghost" type="button">Clear</button>
+          </div>
+        </div>
+        <div id="options" class="options"></div>
+
+        <div class="row">
+          <button id="btnSave" class="btn btn-ok">Save</button>
+          <button id="btnReset" class="btn btn-ghost" type="button">Reset</button>
+          <span id="saveStatus" class="muted small"></span>
+        </div>
+
+       
+    </section>
+
+    <!-- List -->
+    <section class="card">
+      <h3 style="margin-top:0">Questions</h3>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Order</th>
+            <th>Question</th>
+            <th>Correct</th>
+            <th>Slide</th>
+            <th>ID</th>
+            <th class="nowrap">Flags</th>
+            <th class="nowrap">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="questionsBody">
+          <tr><td colspan="7" class="muted">Press <b>Refresh</b> to load.</td></tr>
+        </tbody>
+      </table>
+      <div class="row" style="justify-content: space-between;">
+        <div class="small muted" id="listStatus"></div>
+        <div class="row">
+          <button id="prevPage" class="btn btn-ghost" disabled>Prev</button>
+          <button id="nextPage" class="btn btn-ghost" disabled>Next</button>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<!-- tiny toast -->
+<div id="toast" class="toast"><span id="toastMsg"></span></div>
+
+<script src="admin.js" defer></script>
+</body>
+</html>
