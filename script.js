@@ -1,8 +1,9 @@
-
 /* ==========================================================================
  * Slides + Airtable Quiz (slideshow + questions)
  * Questions Table: tblpvVpIJnkWco25E (Active=1, Order asc)
  * Answers  Table: tblkz5HyZGpgO093S (UPSERT by UserEmail + QuestionId)
+ * Supports Type = "MC" and "FITB"
+ * Robust 422 handling + field-name mapping to fit your Answers schema.
  * ========================================================================== */
 
 /* ------------------ Airtable (read-only for questions) --------------------- */
@@ -14,9 +15,29 @@ const AIRTABLE_Q = {
 
 /* ------------------ Airtable (write: answers log) -------------------------- */
 const AIRTABLE_ANS = {
-  API_KEY: AIRTABLE_Q.API_KEY,          // same PAT
-  BASE_ID: AIRTABLE_Q.BASE_ID,          // same base (change if needed)
-  TABLE_ID: "tblkz5HyZGpgO093S"         // answers table
+  API_KEY: AIRTABLE_Q.API_KEY,
+  BASE_ID: AIRTABLE_Q.BASE_ID,
+  TABLE_ID: "tblkz5HyZGpgO093S"
+};
+
+/* ------------------ Answers table field mapping ---------------------------- */
+/* If your Answers table uses different column names, change them here.
+ * Set a key to null to skip writing it.
+ */
+const ANS_FIELDS = {
+  userEmail:        "UserEmail",
+  questionId:       "QuestionId",
+  presentationId:   "PresentationId",
+  slideId:          "Slide ID",
+  question:         "Question",        // optional
+  answer:           "Answer",
+  correctAnswer:    "CorrectAnswer",   // optional
+  isCorrect:        "IsCorrect",       // checkbox (preferred). Set to null if you don't have it.
+  result:           null,              // Single select "Correct"/"Wrong" (set to "Result" if you use it)
+  timestamp:        "Timestamp",       // text or date
+  type:             "Type",            // optional text
+  wrongAttempts:    "Wrong Attempts",  // optional number
+  lastWrongAt:      "Last Wrong At"    // optional date
 };
 
 /* ------------------ DOM references ---------------------------------------- */
@@ -48,18 +69,39 @@ function pulse(msg, cls="warn"){
 }
 function setProgress(pct){
   if (!el.barInner) return;
-  const n = Math.max(0, Math.min(100, pct|0));
-  el.barInner.style.width = n + "%";
+  el.barInner.style.width = Math.max(0, Math.min(100, pct|0)) + "%";
+}
+
+/* ------------------ FITB correctness -------------------------------------- */
+function isFitbCorrect(userInput, answers, { useRegex=false, caseSensitive=false } = {}){
+  if (!Array.isArray(answers)) return false;
+  const rawUser = String(userInput ?? "");
+  const input = caseSensitive ? rawUser.trim() : rawUser.trim().toLowerCase();
+
+  for (const a of answers) {
+    const ans = String(a ?? "");
+    if (useRegex) {
+      try {
+        const flags = caseSensitive ? "" : "i";
+        const re = new RegExp(ans, flags);
+        if (re.test(rawUser)) return true;
+      } catch { /* bad pattern, ignore */ }
+    } else {
+      const cmp = caseSensitive ? ans.trim() : ans.trim().toLowerCase();
+      if (input === cmp) return true;
+    }
+  }
+  return false;
 }
 
 /* ------------------ State -------------------------------------------------- */
 const state = {
   presentationId: "",
-  slides: [],            // [{objectId, title}, ...] – minimal for quiz mapping
+  slides: [],
   i: 0,
-  answers: {},           // { questionId: {answer,isCorrect} }
-  quizByIndex: {},       // 0-based index → quiz
-  quizBySlideId: {},     // slide.objectId → quiz
+  answers: {},
+  quizByIndex: {},
+  quizBySlideId: {},
 };
 
 /* ------------------ Airtable helpers -------------------------------------- */
@@ -69,45 +111,21 @@ const qBaseUrl = () => `https://api.airtable.com/v0/${AIRTABLE_Q.BASE_ID}/${enco
 function aHeaders(){ return { "Authorization": `Bearer ${AIRTABLE_ANS.API_KEY}`, "Content-Type": "application/json" }; }
 const aBaseUrl = () => `https://api.airtable.com/v0/${AIRTABLE_ANS.BASE_ID}/${encodeURIComponent(AIRTABLE_ANS.TABLE_ID)}`;
 
+function f(name){ return ANS_FIELDS[name]; } // field alias helper
+
 /* Find existing answer record by (UserEmail & QuestionId) */
 async function findAnswerRecord(userEmail, questionId){
   const url = new URL(aBaseUrl());
-  // Escape quotes in formula values
-  const e = s => String(s||"").replace(/'/g, "\\'");
-  url.searchParams.set("filterByFormula", `AND({UserEmail}='${e(userEmail)}',{QuestionId}='${e(questionId)}')`);
+  const E = s => String(s||"").replace(/'/g, "\\'");
+  const fEmail = f("userEmail");
+  const fQid   = f("questionId");
+  if (!fEmail || !fQid) return null; // cannot filter without both
+  url.searchParams.set("filterByFormula", `AND({${fEmail}}='${E(userEmail)}',{${fQid}}='${E(questionId)}')`);
   url.searchParams.set("pageSize", "1");
   const res = await fetch(url.toString(), { headers: aHeaders() });
   if (!res.ok) throw new Error(`Find failed: HTTP ${res.status}`);
   const data = await res.json();
   return (data.records && data.records[0]) ? data.records[0] : null;
-}
-
-/* Upsert into answers: update if exists, else create */
-async function upsertAnswerRecord(fields){
-  const existing = await findAnswerRecord(fields.UserEmail, fields.QuestionId);
-  if (existing) {
-    const res = await fetch(aBaseUrl(), {
-      method: "PATCH",
-      headers: aHeaders(),
-      body: JSON.stringify({ records: [{ id: existing.id, fields }], typecast: true })
-    });
-    if (!res.ok) {
-      const t = await res.text().catch(()=>"" );
-      throw new Error(`Update failed: HTTP ${res.status} ${t}`);
-    }
-    return res.json();
-  } else {
-    const res = await fetch(aBaseUrl(), {
-      method: "POST",
-      headers: aHeaders(),
-      body: JSON.stringify({ records: [{ fields }], typecast: true })
-    });
-    if (!res.ok) {
-      const t = await res.text().catch(()=>"" );
-      throw new Error(`Create failed: HTTP ${res.status} ${t}`);
-    }
-    return res.json();
-  }
 }
 
 /* ------------------ Fetch Questions from Airtable ------------------------- */
@@ -142,25 +160,40 @@ async function fetchQuestionsFromAirtable() {
   const quizBySlideId = {};
 
   all.forEach(rec => {
-    const f = rec.fields || {};
-    const order = Number(f["Order"] ?? NaN);
-    const optsRaw = (f["Options (JSON)"] || "[]");
+    const flds = rec.fields || {};
+    const order = Number(flds["Order"] ?? NaN);
+
+    // MC fields
+    const optsRaw = (flds["Options (JSON)"] || "[]");
     let options = [];
     try { options = Array.isArray(optsRaw) ? optsRaw : JSON.parse(optsRaw); } catch {}
 
+    // FITB fields
+    const fitbRaw = (flds["FITB Answers (JSON)"] || "[]");
+    let fitbAnswers = [];
+    try { fitbAnswers = Array.isArray(fitbRaw) ? fitbRaw : JSON.parse(fitbRaw); } catch {}
+    const fitbUseRegex = !!flds["FITB Use Regex"];
+    const fitbCaseSensitive = !!flds["FITB Case Sensitive"];
+
+    const type = String(flds["Type"] || (options?.length ? "MC" : (fitbAnswers?.length ? "FITB" : "MC"))).toUpperCase();
+
     const q = {
-      questionId: f["QuestionId"] || `q_${rec.id}`,
-      question: f["Question"] || "",
+      questionId: flds["QuestionId"] || `q_${rec.id}`,
+      question: flds["Question"] || "",
+      required: !!flds["Required"],
+      type,
       options: options || [],
-      correct: f["Correct"] || "",
-      required: !!f["Required"],
+      correct: flds["Correct"] || "",
+      fitbAnswers: fitbAnswers || [],
+      fitbUseRegex,
+      fitbCaseSensitive
     };
 
-    const slideId = f["Slide ID"] || "";
+    const slideId = flds["Slide ID"] || "";
     if (slideId) quizBySlideId[slideId] = q;
 
     if (!Number.isNaN(order)) {
-      const idx = Math.max(0, order - 1); // Airtable 1-based → UI 0-based
+      const idx = Math.max(0, order - 1); // 1-based → 0-based
       quizByIndex[idx] = q;
     }
   });
@@ -196,21 +229,39 @@ function renderQuiz(quiz) {
     if (el.btnSubmit) el.btnSubmit.disabled = true;
     return;
   }
-  const selected = (state.answers[quiz.questionId]?.answer) || "";
-  const opts = (quiz.options || [])
-    .map(o => {
-      const checked = (o === selected) ? "checked" : "";
-      return `<label class="opt">
-        <input type="radio" name="opt" value="${att(o)}" ${checked}/>
-        <div><strong>${esc(o)}</strong></div>
-      </label>`;
-    })
-    .join("");
+  const priorAns = (state.answers[quiz.questionId]?.answer) || "";
+
+  if (quiz.type === "MC") {
+    const opts = (quiz.options || [])
+      .map(o => {
+        const checked = (o === priorAns) ? "checked" : "";
+        return `<label class="opt">
+          <input type="radio" name="opt" value="${att(o)}" ${checked}/>
+          <div><strong>${esc(o)}</strong></div>
+        </label>`;
+      })
+      .join("");
+    el.quizBox.innerHTML = `
+      <div><strong>${esc(quiz.question)}</strong> ${quiz.required ? `<span class="pill">Required</span>` : ""}</div>
+      <div>${opts || `<div class="muted">No options set.</div>`}</div>
+    `;
+    if (el.btnSubmit) el.btnSubmit.disabled = !(quiz.options && quiz.options.length);
+    if (el.saveStatus) el.saveStatus.textContent = "";
+    return;
+  }
+
+  // FITB
+  const value = att(priorAns);
   el.quizBox.innerHTML = `
     <div><strong>${esc(quiz.question)}</strong> ${quiz.required ? `<span class="pill">Required</span>` : ""}</div>
-    <div>${opts || `<div class="muted">No options set.</div>`}</div>
+    <div style="margin-top:10px">
+      <input id="fitbInput" type="text" placeholder="Type your answer..." value="${value}" style="width:100%;padding:10px;border:1px solid #e5e7eb;border-radius:8px;background:#fafafa" />
+      <div class="muted" style="font-size:12px;margin-top:6px">
+        ${quiz.fitbUseRegex ? "Regex enabled." : "Exact match"} ${quiz.fitbCaseSensitive ? "(case sensitive)" : "(case insensitive)"}.
+      </div>
+    </div>
   `;
-  if (el.btnSubmit) el.btnSubmit.disabled = !(quiz.options && quiz.options.length);
+  if (el.btnSubmit) el.btnSubmit.disabled = false;
   if (el.saveStatus) el.saveStatus.textContent = "";
 }
 
@@ -224,30 +275,34 @@ function render(){
   setProgress(pct);
 }
 
-function getChoice() {
-  const x = document.querySelector('input[name="opt"]:checked');
-  return x ? x.value : "";
+function getUserAnswer(quiz) {
+  if (!quiz) return "";
+  if (quiz.type === "MC") {
+    const x = document.querySelector('input[name="opt"]:checked');
+    return x ? x.value : "";
+  } else {
+    const inp = document.getElementById("fitbInput");
+    return inp ? inp.value : "";
+  }
 }
+
 async function go(delta) {
   const quiz = currentQuizForIndex(state.i);
   if (quiz && quiz.required) {
-    const cur = getChoice();
+    const cur = getUserAnswer(quiz).trim();
     const has = !!(state.answers[quiz.questionId]?.answer);
     if (!cur && !has) return pulse("Answer required before continuing.", "warn");
   }
 
-  // move first
   state.i = clamp(state.i + delta, 0, state.slides.length - 1);
 
   try {
-    // refresh prior answers (optional)
     const prior = await loadExistingAnswersForUser(
       state.presentationId,
       (el.userEmail?.value || localStorage.getItem('trainingEmail') || '').trim()
     );
     state.answers = Object.assign({}, prior);
 
-    // only jump forward if we landed on an already-answered slide
     const q = currentQuizForIndex(state.i);
     if (q && state.answers[q.questionId]) {
       const next = nextUnansweredIndex();
@@ -263,17 +318,17 @@ async function go(delta) {
 if (el.prevBtn) el.prevBtn.addEventListener("click", () => { go(-1); });
 if (el.nextBtn) el.nextBtn.addEventListener("click", () => { go(+1); });
 
-
-
-
 /* ---------- Resume logic: load prior answers and jump to next unanswered --- */
 async function loadExistingAnswersForUser(presentationId, userEmail){
   if (!userEmail) return {};
-  // Query answers table for this user + presentation
   const url = new URL(aBaseUrl());
-  const e = s => String(s||"").replace(/'/g, "\\'");
-  url.searchParams.set("filterByFormula", `AND({UserEmail}='${e(userEmail)}',{PresentationId}='${e(presentationId)}')`);
+  const E = s => String(s||"").replace(/'/g, "\\'");
+  const fEmail = f("userEmail");
+  const fPres  = f("presentationId");
+  if (!fEmail || !fPres) return {};
+  url.searchParams.set("filterByFormula", `AND({${fEmail}}='${E(userEmail)}',{${fPres}}='${E(presentationId)}')`);
   url.searchParams.set("pageSize", "100");
+
   let all = [];
   let offset;
   do {
@@ -285,24 +340,35 @@ async function loadExistingAnswersForUser(presentationId, userEmail){
     offset = data.offset;
     if (offset) {
       const u = new URL(aBaseUrl());
-      u.searchParams.set("filterByFormula", `AND({UserEmail}='${e(userEmail)}',{PresentationId}='${e(presentationId)}')`);
       u.searchParams.set("pageSize", "100");
+      u.searchParams.set("filterByFormula", `AND({${fEmail}}='${E(userEmail)}',{${fPres}}='${E(presentationId)}')`);
       url.search = u.search;
     }
   } while (offset);
 
   const map = {};
+  const fAns  = f("answer");
+  const fIC   = f("isCorrect");
+  const fRes  = f("result");
+  const fQid  = f("questionId");
+
   for (const r of all) {
-    const f = r.fields || {};
-    if (f.QuestionId) {
-      map[f.QuestionId] = { answer: f.Answer, isCorrect: !!f.IsCorrect };
+    const v = r.fields || {};
+    const qid = v[fQid];
+    if (!qid) continue;
+    const ans = fAns ? v[fAns] : "";
+    let isCorrect = false;
+    if (fIC && typeof v[fIC] !== "undefined") {
+      isCorrect = !!v[fIC];
+    } else if (fRes && typeof v[fRes] === "string") {
+      isCorrect = String(v[fRes]).toLowerCase() === "correct";
     }
+    map[qid] = { answer: ans, isCorrect };
   }
   return map;
 }
 
 function nextUnansweredIndex(){
-  // Prefer ordered questions
   const maxIdx = Object.keys(state.quizByIndex).map(k=>parseInt(k,10)).filter(n=>!Number.isNaN(n));
   const total = maxIdx.length ? Math.max(...maxIdx)+1 : state.slides.length;
   for (let i = 0; i < total; i++){
@@ -317,173 +383,232 @@ function nextUnansweredIndex(){
 function saveLocalProgress(){
   const email = (el.userEmail?.value || "").trim();
   if (!email || !state.presentationId) return;
-  // Count answered among ordered questions
-  const maxIdx = Object.keys(state.quizByIndex).map(k=>parseInt(k,10)).filter(n=>!Number.isNaN(n));
-  const total = maxIdx.length ? Math.max(...maxIdx)+1 : 0;
   const answered = Object.keys(state.answers).length;
   const key = `progress:${email}:${state.presentationId}`;
-  localStorage.setItem(key, JSON.stringify({ answered, total, ts: Date.now() }));
+  localStorage.setItem(key, JSON.stringify({ answered, ts: Date.now() }));
 }
 
+/* =================== Upsert with 422 fallback + mapping ==================== */
+async function upsertAnswerRecordWithWrongCount(base) {
+  const email = (el.userEmail?.value || "").trim();
+  if (!email) throw new Error("Missing UserEmail");
+  const qid = base.questionId;
+  if (!qid) throw new Error("Missing QuestionId");
 
-/* ------------------ Submit & UPSERT --------------------------------------- */
+  const nowIso = new Date().toISOString();
+  const isWrong = base.isCorrect === false;
+
+  // Build "full" fields according to mapping
+  const full = {};
+  if (f("userEmail"))      full[f("userEmail")]      = email;
+  if (f("questionId"))     full[f("questionId")]     = qid;
+  if (f("presentationId")) full[f("presentationId")] = state.presentationId || "";
+  if (f("slideId"))        full[f("slideId")]        = base.slideId || "";
+  if (f("question"))       full[f("question")]       = base.question || "";
+  if (f("answer"))         full[f("answer")]         = base.answer ?? "";
+  if (f("correctAnswer"))  full[f("correctAnswer")]  = base.correctAnswer ?? "";
+  if (f("type"))           full[f("type")]           = base.type || "";
+  if (f("timestamp"))      full[f("timestamp")]      = nowIso;
+
+  if (f("isCorrect")) full[f("isCorrect")] = !!base.isCorrect;
+  if (f("result"))    full[f("result")]    = base.isCorrect ? "Correct" : "Wrong";
+  if (f("wrongAttempts")) full[f("wrongAttempts")] = base.wrongAttempts ?? 0;
+  if (f("lastWrongAt") && isWrong) full[f("lastWrongAt")] = nowIso;
+
+  // Minimal, very safe fallback
+  const minimal = {};
+  if (f("userEmail"))      minimal[f("userEmail")]      = email;
+  if (f("questionId"))     minimal[f("questionId")]     = qid;
+  if (f("presentationId")) minimal[f("presentationId")] = state.presentationId || "";
+  if (f("slideId"))        minimal[f("slideId")]        = base.slideId || "";
+  if (f("answer"))         minimal[f("answer")]         = base.answer ?? "";
+  if (f("timestamp"))      minimal[f("timestamp")]      = nowIso;
+  // Prefer result select if isCorrect field is absent
+  if (f("isCorrect"))      minimal[f("isCorrect")]      = !!base.isCorrect;
+  else if (f("result"))    minimal[f("result")]         = base.isCorrect ? "Correct" : "Wrong";
+
+  const existing = await findAnswerRecord(email, qid);
+
+  async function doCreate(fields) {
+    const res = await fetch(aBaseUrl(), {
+      method: "POST",
+      headers: aHeaders(),
+      body: JSON.stringify({ records: [{ fields }], typecast: true })
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      console.error("[Airtable create] HTTP", res.status, body);
+      if (res.status === 422) throw new Error("422");
+      throw new Error(`Create failed: HTTP ${res.status}`);
+    }
+    return res.json();
+  }
+
+  async function doPatch(id, fields) {
+    const res = await fetch(aBaseUrl(), {
+      method: "PATCH",
+      headers: aHeaders(),
+      body: JSON.stringify({ records: [{ id, fields }], typecast: true })
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      console.error("[Airtable update] HTTP", res.status, body);
+      if (res.status === 422) throw new Error("422");
+      throw new Error(`Update failed: HTTP ${res.status}`);
+    }
+    return res.json();
+  }
+
+  try {
+    if (existing) return await doPatch(existing.id, full);
+    return await doCreate(full);
+  } catch (e) {
+    if (e.message !== "422") throw e;
+    // retry with minimal
+    if (existing) return await doPatch(existing.id, minimal);
+    return await doCreate(minimal);
+  }
+}
+
+/* ------------------ Submit ------------------------------------------------- */
 async function submitAnswer() {
   const slide = state.slides[state.i];
-  const quiz = currentQuizForIndex(state.i);
+  const quiz  = currentQuizForIndex(state.i);
   if (!quiz) return;
-  const answer = getChoice();
-  if (!answer) return pulse("Choose an option.", "warn");
-  const isCorrect = !!(quiz.correct && answer.trim() === quiz.correct.trim());
 
-  // Save locally and ADVANCE IMMEDIATELY
+  const answerRaw = getUserAnswer(quiz);
+  const answer = String(answerRaw || "").trim();
+  if (!answer) return pulse("Provide an answer.", "warn");
+
+  // Correctness
+  let isCorrect = false;
+  if (quiz.type === "MC") {
+    isCorrect = !!(quiz.correct && answer === String(quiz.correct).trim());
+  } else {
+    isCorrect = isFitbCorrect(
+      answerRaw,
+      quiz.fitbAnswers,
+      { useRegex: !!quiz.fitbUseRegex, caseSensitive: !!quiz.fitbCaseSensitive }
+    );
+  }
+
+  // Update local state & navigate
   state.answers[quiz.questionId] = { answer, isCorrect };
-  // Advance right away (no delay) for faster UX
-  state.i = clamp(state.i + 1, 0, state.slides.length - 1);
-    try {
-    // Load previous answers for resume
-    const prior = await loadExistingAnswersForUser(state.presentationId, (el.userEmail?.value||localStorage.getItem('trainingEmail')||'').trim());
-    state.answers = Object.assign({}, prior);
-  } catch(e){ console.warn('Resume load failed', e); }
-
-  // If there is prior progress, jump to first unanswered
   state.i = nextUnansweredIndex();
-
   render();
 
-  // Build payload
   const payload = {
-    userEmail: (el.userEmail?.value || "").trim(),
-    presentationId: state.presentationId,
-    slideId: slide.objectId,
+    slideId: slide?.objectId || "",
     questionId: quiz.questionId,
     question: quiz.question,
     answer,
-    correctAnswer: quiz.correct,
+    correctAnswer: quiz.type === "MC" ? quiz.correct : (quiz.fitbAnswers || []).join(" | "),
     isCorrect,
-    result: isCorrect ? "Correct" : "Wrong",
-    timestamp: new Date().toISOString()
+    type: quiz.type
   };
 
-  // Optional: keep your existing save path if present (best-effort)
+  // Optional: your custom save (webhook or helper) if present
   try {
-    if (typeof upsertAirtableBySlideAndEmail === "function" && window.AIRTABLE_API_KEY && window.AIRTABLE_BASE_ID && window.AIRTABLE_TABLE) {
-      await upsertAirtableBySlideAndEmail(payload.slideId, payload.userEmail, {
-        PresentationId: payload.presentationId,
+    if (typeof upsertAirtableBySlideAndEmail === "function" &&
+        window.AIRTABLE_API_KEY && window.AIRTABLE_BASE_ID && window.AIRTABLE_TABLE) {
+      await upsertAirtableBySlideAndEmail(payload.slideId, (el.userEmail?.value||"").trim(), {
+        PresentationId: state.presentationId,
         "Slide ID": payload.slideId,
         QuestionId: payload.questionId,
         Answer: payload.answer,
         IsCorrect: payload.isCorrect,
-        UserEmail: payload.userEmail,
-        Timestamp: payload.timestamp
+        UserEmail: (el.userEmail?.value||"").trim(),
+        Timestamp: new Date().toISOString()
       });
     } else if (window.AIRTABLE_WEBHOOK_URL) {
-      await fetch(window.AIRTABLE_WEBHOOK_URL, { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(payload) });
+      await fetch(window.AIRTABLE_WEBHOOK_URL, {
+        method:"POST",
+        headers:{ "Content-Type":"application/json" },
+        body: JSON.stringify({
+          ...payload,
+          userEmail: (el.userEmail?.value||"").trim(),
+          presentationId: state.presentationId,
+          timestamp: new Date().toISOString()
+        })
+      });
     }
-  } catch (e) {
-    console.warn("[primary save] failed:", e);
-  }
+  } catch (e) { console.warn("[primary save] failed:", e); }
 
-  // UPSERT into answers table on (UserEmail, QuestionId)
+  // Canonical save → our Answers table (with 422 fallback)
   try {
-    await upsertAnswerRecord({
-      UserEmail: payload.userEmail,
-      PresentationId: payload.presentationId,
-      "Slide ID": payload.slideId,
-      QuestionId: payload.questionId,
-      Question: payload.question,
-      Answer: payload.answer,
-      CorrectAnswer: payload.correctAnswer,
-      IsCorrect: payload.isCorrect,        // checkbox (bool)
-      Result: payload.result,              // single select: Correct | Wrong
-      Timestamp: payload.timestamp
-    });
-    pulse("Saved.", "ok"); saveLocalProgress();
+    await upsertAnswerRecordWithWrongCount(payload);
+    pulse("Saved.", "ok");
+    saveLocalProgress();
   } catch (err) {
     console.error(err);
     pulse("Save failed.", "bad");
   }
 }
-if (el.btnSubmit) el.btnSubmit.addEventListener("click", submitAnswer);
 
+/* Wire submit */
+if (el.btnSubmit) { el.btnSubmit.removeEventListener("click", submitAnswer); el.btnSubmit.addEventListener("click", submitAnswer); }
 
-/* Ensure slide list is at least as long as the number of questions (by Order) */
+/* Ensure virtual slides exist to match ordered questions if needed */
 function getQuestionCount(){
-  // Determine highest index in quizByIndex, then +1
   const idxs = Object.keys(state.quizByIndex).map(k => parseInt(k, 10)).filter(n => !Number.isNaN(n));
-  const byIndexCount = idxs.length ? (Math.max(...idxs) + 1) : 0;
-  // If many slideId-mapped questions but no corresponding slides, fall back to byIndexCount
-  return Math.max(byIndexCount, 0);
+  return idxs.length ? (Math.max(...idxs) + 1) : 0;
 }
 function ensureSlidesForQuestions(){
   const need = getQuestionCount();
   if (!Array.isArray(state.slides)) state.slides = [];
-  // If we only had the embed fallback (1 item) and there are multiple questions, synthesize virtual slides
   while (state.slides.length < need) {
     const i = state.slides.length;
     state.slides.push({ objectId: `virtual_${i+1}`, title: `Question ${i+1}` });
   }
 }
+
 /* ------------------ Deck load integration --------------------------------- */
 async function onDeckLoaded(presentationId, slidesArray){
   state.presentationId = presentationId;
   state.slides = (Array.isArray(slidesArray) && slidesArray.length)
     ? slidesArray
-    : [{ objectId: presentationId, title: "Slides Embed" }]; // minimal 1-slide fallback
+    : [{ objectId: presentationId, title: "Slides Embed" }];
   state.i = 0;
 
   showEmbed(presentationId);
 
-  try {
-    await fetchQuestionsFromAirtable();
-  } catch (e) {
-    console.error("Failed to fetch questions:", e);
-    pulse("Could not load questions.", "bad");
-  }
+  try { await fetchQuestionsFromAirtable(); }
+  catch (e) { console.error("Failed to load questions:", e); pulse("Could not load questions.", "bad"); }
 
-  // NEW: grow slides list to match number of ordered questions when we don't have real slides
   ensureSlidesForQuestions();
 
-  if (el.prevBtn) el.prevBtn.disabled = state.i <= 0;
-  if (el.nextBtn) el.nextBtn.disabled = state.slides.length <= 1;
-
-    try {
-    // Load previous answers for resume
-    const prior = await loadExistingAnswersForUser(state.presentationId, (el.userEmail?.value||localStorage.getItem('trainingEmail')||'').trim());
+  try {
+    const prior = await loadExistingAnswersForUser(
+      state.presentationId,
+      (el.userEmail?.value||localStorage.getItem('trainingEmail')||'').trim()
+    );
     state.answers = Object.assign({}, prior);
   } catch(e){ console.warn('Resume load failed', e); }
 
-  // If there is prior progress, jump to first unanswered
   state.i = nextUnansweredIndex();
-
   render();
 }
 
-/* If another script fires this custom event, we hook in */
+/* Custom event hook */
 document.addEventListener("deck:loaded", (ev) => {
   const { id, slides } = (ev.detail || {});
   onDeckLoaded(id, slides);
 });
 
-/* ------------------ Legacy entry point used by index.html / auto-load ------ */
+/* Legacy entry point used by index.html / auto-load */
 window.onLoadDeckClick = async function(evOrId){
   try{
     const maybeId = typeof evOrId === "string" ? evOrId : "";
     const id = maybeId || (el.presentationIdInput && el.presentationIdInput.value) || "";
-    if (!id) {
-      console.warn("[deck] No presentationId provided.");
-      return;
-    }
+    if (!id) return;
     await onDeckLoaded(id, /* slides */ null);
-
-    try {
-      document.dispatchEvent(new CustomEvent("deck:loaded", { detail: { id, slides: state.slides } }));
-    } catch {}
+    try { document.dispatchEvent(new CustomEvent("deck:loaded", { detail: { id, slides: state.slides } })); } catch {}
   } catch(err){
     console.error("[deck] load failed", err);
   }
 };
 
-/* Keyboard navigation convenience */
+/* Keyboard nav */
 window.addEventListener("keydown", (e) => {
   if (e.key === "ArrowLeft") { try { go(-1); } catch{} }
   if (e.key === "ArrowRight") { try { go(+1); } catch{} }

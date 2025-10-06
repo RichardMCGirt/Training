@@ -131,3 +131,39 @@
   function log(msg, extra){ try{ console.log(TAG, msg, extra||""); }catch{} }
 
 })();
+// auto-load.js — lightweight helper for prefilling inputs and auto-loading a deck
+// IMPORTANT: This file does NOT post answers to Airtable. All saving is handled in script.js.
+
+(function(){
+  const params = new URLSearchParams(location.search);
+  const pid = params.get('presentationId') || '';
+  const reset = params.get('reset') === '1';
+
+  const inputP = document.getElementById('presentationId');
+  const inputE = document.getElementById('userEmail');
+
+  const savedEmail = localStorage.getItem('trainingEmail') || localStorage.getItem('authEmail') || '';
+  if (inputP && pid) inputP.value = pid;
+  if (inputE && savedEmail) inputE.value = savedEmail;
+
+  // wipe local progress if requested
+  if (pid && reset && inputE) {
+    const email = inputE.value.trim();
+    if (email) {
+      const key = `progress:${email}:${pid}`;
+      localStorage.removeItem(key);
+    }
+  }
+
+  // keep email in localStorage
+  if (inputE) inputE.addEventListener('input', () => {
+    localStorage.setItem('trainingEmail', inputE.value.trim());
+  });
+
+  // Auto-load deck if a presentationId is present
+  window.addEventListener('DOMContentLoaded', () => {
+    if (pid && typeof window.onLoadDeckClick === 'function') {
+      window.onLoadDeckClick(pid);
+    }
+  });
+})();

@@ -1,174 +1,179 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Training Admin – Questions & Assignments</title>
-  <link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin – Questions & Assignments</title>
   <style>
-    /* Minimal add-ons that play nice with your existing style.css */
-    :root{ --ok:#29c16b; --bad:#e05d5d; --soft:#1b254b; }
-    body { background: var(--bg, #0b1028); }
-    .wrap { max-width: var(--page-max, 1200px); margin: 0 auto; padding: 16px; }
-    header .title { font-size: 22px; align-items: center; font-weight: 700; }
-    .toolbar { display:flex; gap:10px; align-items:center; flex-wrap: wrap; }
-    .toolbar .grow { flex:1; }
-    .grid { display:grid; grid-template-columns: 1fr 1.2fr; gap:16px; }
-    @media (max-width: 980px){ .grid { grid-template-columns: 1fr; } }
-    .card { background: #0e1638; border: 1px solid #22306b; border-radius: 14px; padding: 14px; }
-    .row { display:flex; gap:10px; align-items:center; margin:8px 0; }
-    .muted { color: #a5b0d6; }
-    .pill { padding: 4px 10px; border:1px solid #2b3564; border-radius:999px; font-size:12px; }
-    .btn { padding:8px 12px; border:1px solid #2b3564; background:#152055; border-radius:10px; cursor:pointer; color:#eaf0ff; }
-    .btn-ghost { background:transparent; }
-    .btn-danger { background:#341212; border-color:#5b1f1f; }
-    .btn-ok { background:#11321f; border-color:#1d5e3a; }
-    .btn:disabled { opacity:.6; cursor:not-allowed; }
-    input[type="text"], input[type="number"], textarea, select { width:100%; padding:8px 10px; background:#0b1435; color:#eaf0ff; border:1px solid #22306b; border-radius:10px; }
-    textarea { min-height: 80px; resize: vertical; }
-    .qbox { display:grid; gap:8px; }
-    .options { display:flex; flex-direction:column; gap:8px; }
-    .opt { display:grid; grid-template-columns: 1fr auto auto auto; gap:8px; align-items:center; }
-    .opt .handle { cursor:ns-resize; user-select:none; padding:6px 8px; border:1px dashed #2b3564; border-radius:8px; }
-    .opt .mark { display:flex; align-items:center; gap:6px; }
-    .table { width:100%; border-collapse: collapse; }
-    .table th, .table td { padding:8px 10px; border-bottom:1px solid #22306b; vertical-align: top; }
-    .table th { text-align:left; color: var(--muted); font-weight:600; }
-    .nowrap { white-space: nowrap; }
-    .small { font-size:12px; opacity:.95; }
-    .badge { display:inline-block; padding:2px 8px; border:1px solid #2b3564; border-radius:999px; }
-    .flag { font-size: 11px; opacity:.9; }
-    .ok { color: var(--ok); }
-    .bad { color: var(--bad); }
-    .toast { position: fixed; right: 16px; bottom: 16px; background:#0e1638; border:1px solid #2b3564; padding:10px 12px; border-radius:12px; box-shadow: 0 6px 18px rgba(0,0,0,.35); display:none; }
-    .toast.show { display:block; animation: fade .2s ease-out; }
-    @keyframes fade { from{ opacity:0; transform: translateY(6px) } to{ opacity:1; transform: translateY(0) } }
-    .toolbar .filters { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-    .hint { font-size:12px; opacity:.8; }
-    .divider { height:1px; background:#22306b; margin:10px 0; }
-    .ghost { opacity:.8; }
-    .chips { display:flex; gap:6px; flex-wrap: wrap; }
-    .chip { padding:4px 8px; border:1px solid #2b3564; border-radius:999px; font-size:12px; cursor:pointer; }
-
-    /* Assignment checklist */
-    .checklist { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:10px; margin-top:8px; }
-    .check-item { display:flex; align-items:center; gap:8px; padding:8px 10px; border:1px solid #2b3564; border-radius:10px; background:#0b1435; display: none; }
-
-    /* Module accordion */
-    .mods { display:grid; gap:8px; }
-    .mod { border:1px solid #2b3564; border-radius:12px; background:#0b1435; }
-    .mod-head { display:flex; justify-content:space-between; align-items:center; width:100%; text-align:left; padding:10px 12px; border:0; background:transparent; color:#eaf0ff; cursor:pointer; }
-    .mod-head:hover { background:#0e1638; }
-    .mod-count { font-size:12px; opacity:.9; padding:2px 8px; border:1px solid #2b3564; border-radius:999px; }
-    .mod-body { padding:8px 12px; border-top:1px solid #22306b; }
-    .qline { display:flex; justify-content:space-between; gap:10px; padding:8px 0; border-bottom:1px solid #1a2458; }
-    .qline:last-child { border-bottom:0; }
-    .qtext { color:#cfd7ff; }
+    :root{--bg:#f7f7fb;--card:#fff;--text:#1f2937;--muted:#6b7280;--brand:#2563eb;--bad:#dc2626;--ok:#059669;--border:#e5e7eb}
+    *{box-sizing:border-box}
+    html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font:14px/1.35 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji"}
+    h1,h2{margin:0 0 8px}
+    .wrap{max-width:1100px;margin:30px auto;padding:0 16px}
+    .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+    .grid{display:grid;grid-template-columns:1fr 380px;gap:16px}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px;box-shadow:0 1px 8px rgba(0,0,0,.04)}
+    .muted{color:var(--muted)}
+    .small{font-size:12px}
+    input[type="text"], input[type="number"], textarea, select{
+      width:100%;padding:10px;border:1px solid var(--border);border-radius:10px;background:#fff
+    }
+    textarea{min-height:90px;resize:vertical}
+    .btn{padding:8px 12px;border-radius:10px;border:1px solid var(--border);background:#fff;cursor:pointer}
+    .btn:hover{border-color:#cbd5e1}
+    .btn-primary{background:var(--brand);border-color:var(--brand);color:#fff}
+    .btn-danger{background:var(--bad);border-color:var(--bad);color:#fff}
+    .btn-ghost{background:#fff;border-color:transparent}
+    .pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#eef2ff;color:#4f46e5;font-weight:600;margin:0 4px}
+    .stage{min-height:140px}
+    #moduleGroups .mod{border:1px solid var(--border);border-radius:12px;margin:8px 0;overflow:hidden;background:#fff}
+    #moduleGroups .mod-head{display:flex;justify-content:space-between;align-items:center;width:100%;padding:10px 12px;background:#f9fafb;border:0;cursor:pointer}
+    #moduleGroups .mod-count{background:#eff6ff;color:#1d4ed8;border-radius:999px;padding:2px 8px;font-weight:700}
+    #moduleGroups .mod-body{padding:8px 12px}
+    .qline{display:grid;grid-template-columns:1fr auto;gap:8px;padding:8px 0;border-bottom:1px dashed var(--border)}
+    .qline:last-child{border-bottom:0}
+    .chip{display:inline-block;background:#eef2ff;border:1px solid #e0e7ff;border-radius:999px;padding:2px 8px;margin:2px 4px 2px 0}
+    .hint{color:#6b7280}
+    .opt{display:flex;gap:8px;align-items:center;margin:6px 0}
+    .opt .mark{display:flex;gap:4px;align-items:center}
+    .section-title{font-weight:700;margin:4px 0 8px}
+    .divider{height:1px;background:var(--border);margin:10px 0}
+    .controls .row{justify-content:space-between}
+    .toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:#111827;color:#fff;padding:10px 14px;border-radius:10px;opacity:0;pointer-events:none;transition:.25s}
+    .toast.show{opacity:1;pointer-events:auto}
+    .flags{display:flex;gap:10px;flex-wrap:wrap}
+    .flags label{display:flex;align-items:center;gap:6px}
+    .two-col{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    @media (max-width: 980px){ .grid{grid-template-columns:1fr} }
   </style>
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <div class="row" style="justify-content: space-between;">
-          <a class="btn btn-ghost" href="index.html">← Back</a>
-      <div class="title">Training Admin</div>
+  <div class="wrap">
+    <div class="row" style="justify-content:space-between">
+      <h1>Admin</h1>
       <div class="row">
-      </div>
-    </div>
-  </header>
-
-  <!-- Search / flags -->
-  <section class="card">
-    <div class="toolbar">
-      <input id="search" class="grow" placeholder="Search modules or questions…"/>
-      <div class="filters">
-        <label class="hint"><input type="checkbox" id="fltActive" checked> Active</label>
-        <label class="hint"><input type="checkbox" id="fltInactive"> Inactive</label>
+        <input id="search" type="text" placeholder="Search questions, modules, slide IDs…" style="min-width:280px">
+        <label class="muted"><input id="fltActive" type="checkbox" checked> Active</label>
+        <label class="muted"><input id="fltInactive" type="checkbox" checked> Inactive</label>
         <button id="btnRefresh" class="btn">Refresh</button>
       </div>
     </div>
-  </section>
 
-  <div class="grid">
-    <!-- Editor -->
-    <section class="card" id="formCard">
-      <div class="row" style="justify-content: space-between;">
-        <h3 style="margin:0">Create / Edit</h3>
-      </div>
-      <div class="qbox">
-        <div class="row">
-          <input id="slideId" placeholder="Slide ID (optional, e.g., g123..._0_5)" style="display: none;">
-          <input id="order" type="number" placeholder="Order" value="1" style="display: none;">
+    <div class="grid" style="margin-top:12px">
+      <section class="card">
+        <div class="row" style="justify-content:space-between">
+          <h2>Questions (grouped by Module)</h2>
+          <div id="listStatus" class="muted small">–</div>
         </div>
-        <input id="questionId" placeholder="QuestionId (auto if blank)" style="display: none;">
+        <div id="moduleGroups" class="stage"><div class="muted">Loading…</div></div>
+      </section>
 
-        <!-- Module input UX -->
-        <div class="row">
-          <div style="flex:1">
-            <label class="muted small" for="moduleSelect">Module (pick an existing value)</label>
-            <select id="moduleSelect"></select>
-          </div>
-          <div style="flex:1">
-            <label class="muted small" for="moduleInput">Or type a new Module</label>
-            <input id="moduleInput" type="text" placeholder="e.g., Safety Basics" />
-          </div>
-        </div>
-        <div class="chips" id="moduleChips"></div>
+      <aside class="card">
+        <h2>Create / Edit Question</h2>
+        <div class="divider"></div>
 
-        <textarea id="questionText" placeholder="Question text…"></textarea>
+        <label class="section-title">Question Type</label>
+        <select id="questionType">
+          <option value="MC">Multiple Choice</option>
+          <option value="FITB">Fill in the Blank</option>
+        </select>
 
-        <div class="row" style="justify-content: space-between; align-items: flex-end;">
+        <div class="two-col" style="margin-top:8px">
           <div>
-            <div class="muted small">Options</div>
+            <label class="section-title">Slide ID (optional)</label>
+            <input id="slideId" placeholder="e.g., g123..._0_5" />
           </div>
-          <div class="row">
-            <button id="btnAddOption" class="btn btn-ghost" type="button">+ Add option</button>
-            <button id="btnClearOptions" class="btn btn-ghost" type="button">Clear</button>
+          <div>
+            <label class="section-title">Order</label>
+            <input id="order" type="number" value="1" />
           </div>
         </div>
-        <div id="options" class="options"></div>
 
-      
-    </section>
+        <label class="section-title" style="margin-top:8px">Question ID (auto if blank)</label>
+        <input id="questionId" placeholder="q_auto…" />
 
-    <!-- Grouped Modules & Questions (collapsible) -->
-    <section class="card">
-      <h3 style="margin-top:0">Modules</h3>
-      <div id="moduleGroups" class="mods">
-        <div class="muted small">Press <b>Refresh</b> to load.</div>
-      </div>
-      <div class="row" style="justify-content: space-between;">
-        <div class="small muted" id="listStatus"></div>
+        <label class="section-title" style="margin-top:8px">Question Text</label>
+        <textarea id="questionText" placeholder="Type the question…"></textarea>
+
+        <div class="two-col" style="margin-top:8px">
+          <div>
+            <label class="section-title">Module (pick)</label>
+            <select id="moduleSelect">
+              <option value="">(none)</option>
+            </select>
+            <div id="moduleChips" class="muted small" style="margin-top:6px"></div>
+          </div>
+          <div>
+            <label class="section-title">…or Module (type new)</label>
+            <input id="moduleInput" placeholder="e.g., Safety, Basics, Deck-1" />
+          </div>
+        </div>
+
+        <!-- Multiple Choice block -->
+        <div id="mcBlock" style="margin-top:12px">
+          <div class="row" style="justify-content:space-between">
+            <label class="section-title">Options</label>
+            <div class="row">
+              <button id="btnAddOption" class="btn">+ Option</button>
+              <button id="btnClearOptions" class="btn">Clear</button>
+            </div>
+          </div>
+          <div id="options"></div>
+          <div class="hint small" style="margin-top:4px">Mark one option as <strong>Correct</strong>.</div>
+        </div>
+
+        <!-- Fill in the Blank block -->
+        <div id="fitbBlock" style="margin-top:12px; display:none">
+          <label class="section-title">Accepted Answers</label>
+          <textarea id="fitbAnswers" placeholder="One per line, or comma-separated. Example:
+hello
+hi
+howdy"></textarea>
+          <div class="flags" style="margin-top:6px">
+            <label><input id="fitbUseRegex" type="checkbox"> Treat as Regular Expressions</label>
+            <label><input id="fitbCaseSensitive" type="checkbox"> Case Sensitive</label>
+          </div>
+          <div class="hint small" style="margin-top:4px">
+            If <strong>Regex</strong> is enabled, each line is a JS regex pattern (no slashes). Otherwise, we compare plain text after trimming; case-insensitive by default.
+          </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="row" style="justify-content:flex-end">
+          <button id="btnReset" class="btn">Reset</button>
+          <button id="btnSave" class="btn btn-primary">Save</button>
+        </div>
+      </aside>
+    </div>
+
+    <section class="card" style="margin-top:16px">
+      <h2>Assign Modules to Job Titles</h2>
+      <div class="muted small">Select one or more Titles, then pick a Module above (in the question form) and click Save Assignment.</div>
+      <div class="divider"></div>
+      <div class="two-col">
+        <div>
+          <label class="section-title">Titles</label>
+          <select id="titleSelect" multiple size="10" style="min-height:240px"></select>
+          <div class="row" style="margin-top:8px">
+            <button id="btnReloadTitles" class="btn">Reload Titles</button>
+          </div>
+        </div>
+        <div>
+          <label class="section-title">Assigned Modules (shared across selected Titles)</label>
+          <div id="moduleChecklist"></div>
+          <div class="row" style="margin-top:10px; gap:10px">
+            <button id="btnSaveAssignment" class="btn btn-primary">Save Assignment</button>
+            <button id="btnClearAssignment" class="btn">Clear (not saved)</button>
+          </div>
+          <div id="assignStatus" class="muted small" style="margin-top:8px">Select titles to begin.</div>
+        </div>
       </div>
     </section>
   </div>
 
-  <!-- Assign Modules by Job Title (multi-select) -->
-  <section class="card" id="assignCard">
-    <h3 style="margin-top:0">Assign Modules by Job Title</h3>
-    <div class="row" style="align-items:flex-start;">
-      <div style="flex:1">
-        <label class="muted small" for="titleSelect">
-          <span class="hint">hold Ctrl/Cmd to select multiple</span>
-        </label>
-        <select id="titleSelect" multiple size="8"></select>
-      </div>
-      <div>
-        <button id="btnReloadTitles" class="btn">Reload Titles</button>
-      </div>
-    </div>
-    <div id="moduleChecklist" class="checklist" style="margin-top:8px"></div>
-    <div class="row">
-      <button id="btnSaveAssignment" class="btn btn-ok">Save Assignment</button>
-      <button id="btnClearAssignment" class="btn btn-danger" type="button">Clear All</button>
-      <span id="assignStatus" class="muted small"></span>
-    </div>
-  </section>
-</div>
+  <div id="toast" class="toast"><span id="toastMsg">Saved</span></div>
 
-<!-- tiny toast -->
-<div id="toast" class="toast"><span id="toastMsg"></span></div>
-
-<script src="admin.js" defer></script>
+  <script src="admin.js"></script>
 </body>
 </html>

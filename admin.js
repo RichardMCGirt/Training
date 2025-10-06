@@ -1,5 +1,4 @@
-// admin.js – Questions editor + Assignments (Modules by Job Title)
-// Long Text "Assigned Modules" support + ADD (merge), with VERIFY + DEEP LOGS
+// admin.js – Questions editor + Assignments + Delete + FITB support
 // Uses Title only for listing; NEVER patches the Title field.
 
 // ========= Airtable Config =========
@@ -34,6 +33,7 @@ const ui = {
   moduleGroups: $("#moduleGroups"),
 
   // Form
+  questionType: $("#questionType"),
   slideId: $("#slideId"),
   order: $("#order"),
   questionId: $("#questionId"),
@@ -43,6 +43,13 @@ const ui = {
   options: $("#options"),
   btnSave: $("#btnSave"),
   btnReset: $("#btnReset"),
+
+  // MC/FITB blocks
+  mcBlock: $("#mcBlock"),
+  fitbBlock: $("#fitbBlock"),
+  fitbAnswers: $("#fitbAnswers"),
+  fitbUseRegex: $("#fitbUseRegex"),
+  fitbCaseSensitive: $("#fitbCaseSensitive"),
 
   // Module helpers (for questions)
   moduleSelect: $("#moduleSelect"),
@@ -75,6 +82,14 @@ const asBool = v => !!(v === true || v === "true" || v === 1 || v === "1" || v =
 function safeParseJSON(v){ try { return JSON.parse(v); } catch { return Array.isArray(v) ? v : [];}}
 const dangerConfirm = (msg) => window.confirm(msg);
 
+function parseListTextarea(text){
+  if (!text) return [];
+  return String(text)
+    .split(/\r?\n|,/g)
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
 // ========= Fetch helpers =========
 function headers(){
   return {
@@ -100,7 +115,7 @@ async function readRecord(tableId, id){
   return res.json();
 }
 // Generic list with sort + optional filter + paging for any table
-async function listAll({ tableId = AIRTABLE.TABLE_ID, pageSize=100, offset, sortField="Order", sortDir="asc", filterByFormula } = {}){
+async function listAll({ tableId = AIRTABLE.TABLE_ID, pageSize=10, offset, sortField="Order", sortDir="asc", filterByFormula } = {}){
   const url = new URL(baseUrl(tableId));
   url.searchParams.set("pageSize", String(pageSize));
   if (sortField) {
@@ -137,7 +152,6 @@ async function updateRecord(id, fields){
   return res.json();
 }
 // ======== NEW: Delete helpers =========
-// Delete a single record in the Questions table
 async function deleteRecord(id){
   if (!id) throw new Error("Missing record id");
   const url = `${baseUrl()}/${encodeURIComponent(id)}`;
@@ -148,11 +162,9 @@ async function deleteRecord(id){
   }
   return res.json();
 }
-// Batch delete (optional utility) – accepts an array of ids
 async function deleteRecords(ids = []){
   const unique = Array.from(new Set(ids.filter(Boolean)));
   if (!unique.length) return { deleted: [] };
-  // Airtable batch deletion via query params records[]=id
   const url = new URL(baseUrl());
   unique.forEach(id => url.searchParams.append("records[]", id));
   const res = await fetch(url.toString(), { method: "DELETE", headers: headers() });
@@ -240,45 +252,88 @@ function populateModuleSelect(modules){
   }
 }
 
+// ========= Type visibility =========
+function updateTypeVisibility(){
+  const type = (ui.questionType?.value || "MC").toUpperCase();
+  if (ui.mcBlock) ui.mcBlock.style.display = (type === "MC") ? "" : "none";
+  if (ui.fitbBlock) ui.fitbBlock.style.display = (type === "FITB") ? "" : "none";
+}
+
 // ========= Form helpers (Questions) =========
 function genQuestionId(prefix="q"){ return `${prefix}_${Math.random().toString(36).slice(2,8)}`; }
 function readForm(){
+  const type = (ui.questionType?.value || "MC").toUpperCase();
   const slide = (ui.slideId.value || "").trim();
   const order = Number(ui.order.value || 0);
   const qid = (ui.questionId.value || "").trim() || genQuestionId("q");
   const qtext = (ui.questionText.value || "").trim();
-  const opts = getOptions();
   const moduleVal = currentModuleValue();
 
   if (!qtext) throw new Error("Question text is required.");
-  if (opts.length === 0) throw new Error("Add at least one option.");
-  const correct = (opts.find(o => o.correct) || {}).text || "";
 
-  return {
+  const fields = {
+    "Type": type,
     "Slide ID": slide,
     "Order": order,
     "QuestionId": qid,
     "Question": qtext,
-    "Options (JSON)": JSON.stringify(opts.map(o => o.text)),
-    "Correct": correct,
     "Required": true,
     "Active": true,
     "Module": moduleVal || undefined,
   };
+
+  if (type === "MC") {
+    const opts = getOptions();
+    if (opts.length === 0) throw new Error("Add at least one option.");
+    const correct = (opts.find(o => o.correct) || {}).text || "";
+    fields["Options (JSON)"] = JSON.stringify(opts.map(o => o.text));
+    fields["Correct"] = correct;
+    // clear FITB fields if present
+    fields["FITB Answers (JSON)"] = undefined;
+    fields["FITB Use Regex"] = undefined;
+    fields["FITB Case Sensitive"] = undefined;
+  } else {
+    const list = parseListTextarea(ui.fitbAnswers?.value || "");
+    if (!list.length) throw new Error("Add at least one accepted answer.");
+    fields["FITB Answers (JSON)"] = JSON.stringify(list);
+    fields["FITB Use Regex"] = !!(ui.fitbUseRegex && ui.fitbUseRegex.checked);
+    fields["FITB Case Sensitive"] = !!(ui.fitbCaseSensitive && ui.fitbCaseSensitive.checked);
+    // clear MC fields if present
+    fields["Options (JSON)"] = undefined;
+    fields["Correct"] = undefined;
+  }
+  return fields;
 }
+
 function fillForm(fields){
+  const type = (fields["Type"] || "MC").toUpperCase();
+  if (ui.questionType) ui.questionType.value = type;
+  updateTypeVisibility();
+
   ui.slideId.value = fields["Slide ID"] || "";
   ui.order.value = Number(fields["Order"] || 1);
   ui.questionId.value = fields["QuestionId"] || "";
   ui.questionText.value = fields["Question"] || "";
-  const arr = safeParseJSON(fields["Options (JSON)"]);
-  setOptions(arr, fields["Correct"] || "");
+
   const m = fields["Module"] || "";
   if (ui.moduleSelect) ui.moduleSelect.value = m;
   if (ui.moduleInput) ui.moduleInput.value = "";
+
+  if (type === "MC") {
+    const arr = safeParseJSON(fields["Options (JSON)"]);
+    setOptions(arr, fields["Correct"] || "");
+  } else {
+    const answers = safeParseJSON(fields["FITB Answers (JSON)"]);
+    if (ui.fitbAnswers) ui.fitbAnswers.value = (answers || []).join("\n");
+    if (ui.fitbUseRegex) ui.fitbUseRegex.checked = asBool(fields["FITB Use Regex"]);
+    if (ui.fitbCaseSensitive) ui.fitbCaseSensitive.checked = asBool(fields["FITB Case Sensitive"]);
+  }
 }
+
 function resetForm(){
   state.editingId = null;
+  if (ui.questionType) ui.questionType.value = "MC";
+  updateTypeVisibility();
   ui.slideId.value = "";
   ui.order.value = "1";
   ui.questionId.value = "";
@@ -286,6 +341,9 @@ function resetForm(){
   if (ui.moduleSelect) ui.moduleSelect.value = "";
   if (ui.moduleInput) ui.moduleInput.value = "";
   setOptions(["",""]);
+  if (ui.fitbAnswers) ui.fitbAnswers.value = "";
+  if (ui.fitbUseRegex) ui.fitbUseRegex.checked = false;
+  if (ui.fitbCaseSensitive) ui.fitbCaseSensitive.checked = false;
 }
 
 // ========= NEW: Grouped modules view =========
@@ -306,12 +364,26 @@ function filterRows(q){
   const showInactive = ui.fltInactive ? ui.fltInactive.checked : true;
   return state.rows.filter(r => {
     const f = r.fields || {};
-    const hay = `${f.Question||""}\n${f["Slide ID"]||""}\n${f.QuestionId||""}\n${f.Module||""}`.toLowerCase();
+    const hay = `${f.Type||""}\n${f.Question||""}\n${f["Slide ID"]||""}\n${f.QuestionId||""}\n${f.Module||""}`.toLowerCase();
     const passesSearch = !s || hay.includes(s);
     const isActive = asBool(f.Active);
     const passesFlags = (isActive && showActive) || (!isActive && showInactive);
     return passesSearch && passesFlags;
   });
+}
+
+function summarizeQuestion(f){
+  const type = (f.Type || "MC").toUpperCase();
+  if (type === "FITB") {
+    const answers = safeParseJSON(f["FITB Answers (JSON)"]) || [];
+    const mode = asBool(f["FITB Use Regex"]) ? "regex" : "plain";
+    const cs = asBool(f["FITB Case Sensitive"]) ? "CS" : "CI";
+    return `FITB (${mode}, ${cs}) – Accepts ${answers.length} answer(s)`;
+  } else {
+    const arr = safeParseJSON(f["Options (JSON)"]) || [];
+    const correct = f["Correct"] || "(none)";
+    return `MC – ${arr.length} option(s), correct: “${correct}”`;
+  }
 }
 
 function renderModulesView(rows){
@@ -335,8 +407,12 @@ function renderModulesView(rows){
       const f = r.fields || {};
       const qtxt = esc(f.Question || "");
       const id = esc(r.id);
+      const meta = summarizeQuestion(f);
       return `<div class="qline">
-        <div class="qtext">${qtxt}</div>
+        <div class="qtext">
+          <div><strong>${qtxt}</strong></div>
+          <div class="muted small">${esc(meta)}</div>
+        </div>
         <div class="actions" style="display:flex; gap:8px">
           <button class="btn btn-ghost edit" data-id="${id}">Edit</button>
           <button class="btn btn-danger delete" data-id="${id}">Delete</button>
@@ -422,7 +498,7 @@ async function refreshList(){
   }
 }
 
-// ========= Assignments: Titles ⇄ Modules (unchanged core, preview-only) =========
+// ========= Assignments: Titles ⇄ Modules (preview-only) =========
 function buildModuleChecklist(selected = new Set()){
   if (!ui.moduleChecklist) return;
   const modules = Array.from(state.modules).sort((a,b)=>a.localeCompare(b));
@@ -601,7 +677,7 @@ function onTitleChange(){
   rebuildChecklistForCurrentSelection();
 }
 
-// Save assignment — minimal (unchanged from your flow)
+// Save assignment — minimal (preview-style merge)
 async function saveAssignment(){
   const pickedIds = state.selectedTitleIds;
   if (!pickedIds.length) { toast("Pick at least one Title.", "bad"); return; }
@@ -657,6 +733,7 @@ function getSelectedTitleIds(){
 // ========= Wire events =========
 if (ui.btnAddOption) ui.btnAddOption.addEventListener("click", () => addOption(""));
 if (ui.btnClearOptions) ui.btnClearOptions.addEventListener("click", () => setOptions(["",""]));
+if (ui.questionType) ui.questionType.addEventListener("change", updateTypeVisibility);
 
 if (ui.btnSave) ui.btnSave.addEventListener("click", async (e) => {
   e.preventDefault();
@@ -696,8 +773,9 @@ if (ui.btnRefresh) ui.btnRefresh.addEventListener('click', () => refreshList());
 
 // ========= Init =========
 (async function init(){
-  console.log("[Admin] init() grouped modules");
+  console.log("[Admin] init() grouped modules + FITB");
   try {
+    updateTypeVisibility();
     if (ui.options && ui.options.children.length === 0) { setOptions(["",""]); }
     await refreshList();
     await fetchDistinctTitles();
