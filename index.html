@@ -1,81 +1,110 @@
+
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Slides Training (Auto-Type + Fallback)</title>
-  <link rel="stylesheet" href="style.css">
+  <meta charset="utf-8">
+  <title>Slides Training – Deck + Airtable Quiz</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root { --gap: 16px; --card-bg:#fff; --muted:#6b7280; --border:#e5e7eb; --accent:#2563eb; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background:#f7f7fb; color:#111827; }
+    .wrap { max-width: 1200px; margin: 24px auto; padding: 0 16px; }
+    h1 { font-size: 20px; margin: 0 0 16px; }
+    .controls { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom: var(--gap); }
+    .controls input, .controls button { height: 36px; }
+    .controls input[type="text"] { padding: 6px 10px; border:1px solid var(--border); border-radius:8px; min-width: 260px; }
+    .btn { background:#111827; color:#fff; border:0; border-radius:8px; padding:6px 12px; cursor:pointer; }
+    .btn:disabled { opacity:0.5; cursor:not-allowed; }
+    .muted { color: var(--muted); }
+    .pill { font-size: 12px; padding: 2px 8px; border:1px solid var(--border); border-radius:999px; margin-left:8px; color:#374151; }
+
+    .grid { display: grid; grid-template-columns: 1fr 420px; gap: var(--gap); align-items: start; }
+    @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } }
+
+    .card { background: var(--card-bg); border:1px solid var(--border); border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.04); overflow: hidden; }
+    .card .hd { padding: 12px 14px; border-bottom: 1px solid var(--border); font-weight: 600; }
+    .card .bd { padding: 12px; }
+
+    #embedCard { display:none; }
+    #slidesEmbed { width:100%; height: 520px; border:0; background:#fafafa; }
+
+    #quizBox .opt { display:flex; gap:10px; align-items: flex-start; border:1px solid var(--border); border-radius:8px; padding:10px; margin:10px 0; background:#fafafa; }
+    #quizBox .opt input { transform: translateY(2px); }
+    #saveStatus.ok { color: #059669; } #saveStatus.warn { color: #b45309; } #saveStatus.bad { color: #b91c1c; }
+
+    .row { display:flex; align-items:center; gap:8px; flex-wrap: wrap; }
+    #bar { height:8px; background:#e5e7eb; border-radius:999px; overflow:hidden; margin: 8px 0 0; }
+    #bar > i { display:block; height:100%; width:0%; background: var(--accent); }
+  </style>
+  <script src="./auth.js"></script>
 </head>
-<body>
-<div id="notice" class="notice notice-info">
-  <div class="notice-text" id="noticeText">Preparing to load deck…</div>
-  <button id="retryBtn" class="btn btn-ghost" title="Try again" style="display:none">Retry</button>
-</div>
+<body onload="requireAuthOrRedirect()">
+  <div class="wrap">
+    <h1>Slides Training</h1>
 
-<div class="wrap">
-  <header>
-    <div class="title">Diana’s Wonderful Training</div>
-    <div class="row">
+    <div class="controls">
+      <input id="presentationId" type="text" placeholder="Google Slides ID (e.g., 1lsNam3...)"/>
+      <input id="userEmail" type="text" placeholder="Your email (for saving answers)" />
+      <button class="btn" id="btnLoad" onclick="onLoadDeckClick()">Load</button>
+      <button class="btn" onclick="window.location.href='dashboard.html'">Back to Dashboard</button>
+
+      <span class="muted">Navigate:</span>
+      <button id="prevBtn" class="btn" disabled>&larr; Prev</button>
+      <button id="nextBtn" class="btn" disabled>Next &rarr;</button>
+      <span id="counter" class="muted">0 / 0</span>
     </div>
-  </header>
 
-  <div class="card" style="margin-bottom:14px">
-    <div class="qbox">
-      <div class="row">
-        <label for="presentationId"><strong></strong></label>
-        <div class="type-wrap">
-          <input id="presentationId" autocomplete="off" spellcheck="false" placeholder=""/>
-          <span class="caret" aria-hidden="true"></span>
+    <div class="grid">
+      <section class="card" id="embedCard">
+        <div class="hd">Slideshow</div>
+        <div class="bd">
+          <iframe id="slidesEmbed" allowfullscreen></iframe>
+          <div style="margin-top:12px">
+            <div id="bar"><i id="barInner"></i></div>
+          </div>
         </div>
-        <button id="btnLoad" class="btn">Load deck</button>
-        <span id="loadStatus" class="muted"></span>
-      </div>
-      <div class="row">
-        <span class="pill">Tip</span>
-        <span class="muted">URL looks like: https://docs.google.com/presentation/d/<b>ID</b>/edit</span>
-      </div>
-    </div>
-  </div>
+      </section>
 
-  <div class="grid">
-    <section class="card">
-      <div class="stage" id="stage"><div class="muted">Waiting for deck to load…</div></div>
-      <div class="controls">
-        <div class="row">
-          <button id="prevBtn" class="btn" disabled>&larr; Prev</button>
-          <button id="nextBtn" class="btn" disabled>Next &rarr;</button>
-          <span id="counter" class="muted">0 / 0</span>
+      <section class="card">
+        <div class="hd">Question</div>
+        <div class="bd">
+          <div id="quizBox"><div class="muted">Load a deck to begin.</div></div>
+          <div class="row" style="margin-top:10px">
+            <button class="btn" id="btnSubmit">Submit answer</button>
+            <span id="saveStatus" class="muted"></span>
+          </div>
         </div>
-      </div>
-      <div class="progress"><div id="bar" class="bar"></div></div>
-    </section>
-
-    <aside class="card">
-      <div class="qbox" id="quizBox"><div class="muted">Add a question mapping below to show a quiz for this slide.</div></div>
-      <div class="controls">
-        <div class="row">
-          <button id="btnSubmit" class="btn" disabled>Submit answer</button>
-          <span id="saveStatus" class="muted"></span>
-        </div>
-        <div class="row">
-          <label class="muted">User email (optional):</label>
-          <input id="userEmail" placeholder="user@company.com" style="width:220px"/>
-        </div>
-      </div>
-    </aside>
-  </div>
-
-  <div class="card" id="embedCard" style="margin-top:14px; display:none;">
-    <h3 style="margin:0;padding:10px 14px;border-bottom:1px solid #22306b;background:#101b46">Slides (Live embed fallback)</h3>
-    <div style="position:relative;padding:12px">
-      <iframe id="slidesEmbed" title="Slides Embed" width="100%" height="520" frameborder="0" allowfullscreen style="border:1px solid #233072;border-radius:12px;background:#0a1330;"></iframe>
-      <div id="embedHint" class="muted" style="margin-top:8px">Using live embed because thumbnail service was unavailable.</div>
+      </section>
     </div>
   </div>
-</div>
 
-<script src="script.js" defer></script>
-<script src="auto-load.js" defer></script>
-
+  <script src="./safeCacheBust.js"></script>
+  <script src="./auto-load.js"></script>
+  <script>
+    // Pre-fill from query + localStorage
+    (function(){
+      const params = new URLSearchParams(location.search);
+      const pid = params.get('presentationId') || '';
+      const reset = params.get('reset') === '1';
+      const email = localStorage.getItem('trainingEmail') || localStorage.getItem('authEmail') || '';
+      const inputP = document.getElementById('presentationId');
+      const inputE = document.getElementById('userEmail');
+      if (pid) inputP.value = pid;
+      if (email) inputE.value = email;
+      // If redirect came from dashboard Resume/Restart and we have a pid, auto-load
+      if (pid) {
+        if (reset) {
+          // wipe local progress for this module
+          const key = `progress:${email}:${pid}`;
+          localStorage.removeItem(key);
+        }
+        window.addEventListener('DOMContentLoaded', () => onLoadDeckClick());
+      }
+      // keep email in localStorage
+      inputE.addEventListener('input', () => localStorage.setItem('trainingEmail', inputE.value.trim()));
+    })();
+  </script>
+  <script src="./script.js"></script>
 </body>
 </html>

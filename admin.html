@@ -24,7 +24,7 @@
     .btn-danger { background:#341212; border-color:#5b1f1f; }
     .btn-ok { background:#11321f; border-color:#1d5e3a; }
     .btn:disabled { opacity:.6; cursor:not-allowed; }
-    input[type="text"], input[type="number"], textarea { width:100%; padding:8px 10px; background:#0b1435; color:#eaf0ff; border:1px solid #22306b; border-radius:10px; }
+    input[type="text"], input[type="number"], textarea, select { width:100%; padding:8px 10px; background:#0b1435; color:#eaf0ff; border:1px solid #22306b; border-radius:10px; }
     textarea { min-height: 80px; resize: vertical; }
     .qbox { display:grid; gap:8px; }
     .options { display:flex; flex-direction:column; gap:8px; }
@@ -47,6 +47,8 @@
     .hint { font-size:12px; opacity:.8; }
     .divider { height:1px; background:#22306b; margin:10px 0; }
     .ghost { opacity:.8; }
+    .chips { display:flex; gap:6px; flex-wrap: wrap; }
+    .chip { padding:4px 8px; border:1px solid #2b3564; border-radius:999px; font-size:12px; cursor:pointer; }
   </style>
 </head>
 <body>
@@ -68,8 +70,6 @@
         <label class="hint"><input type="checkbox" id="fltActive" checked> Active</label>
         <label class="hint"><input type="checkbox" id="fltInactive"> Inactive</label>
         <button id="btnRefresh" class="btn">Refresh</button>
-        
-        <input id="fileImport" type="file" accept="application/json" style="display:none">
       </div>
     </div>
   </section>
@@ -82,10 +82,23 @@
       </div>
       <div class="qbox">
         <div class="row">
-   <input id="slideId" placeholder="Slide ID (optional, e.g., g123..._0_5)" style="display: none;">
-<input id="order" type="number" placeholder="Order" value="1" style="display: none;">
-</div>
-<input id="questionId" placeholder="QuestionId (auto if blank)" style="display: none;">
+          <input id="slideId" placeholder="Slide ID (optional, e.g., g123..._0_5)" style="display: none;">
+          <input id="order" type="number" placeholder="Order" value="1" style="display: none;">
+        </div>
+        <input id="questionId" placeholder="QuestionId (auto if blank)" style="display: none;">
+
+        <!-- NEW: Module input UX -->
+        <div class="row">
+          <div style="flex:1">
+            <label class="muted small" for="moduleSelect">Module (pick an existing value)</label>
+            <select id="moduleSelect"></select>
+          </div>
+          <div style="flex:1">
+            <label class="muted small" for="moduleInput">Or type a new Module</label>
+            <input id="moduleInput" type="text" placeholder="e.g., Safety Basics" />
+          </div>
+        </div>
+        <div class="chips" id="moduleChips"></div>
 
         <textarea id="questionText" placeholder="Question text…"></textarea>
 
@@ -105,8 +118,7 @@
           <button id="btnReset" class="btn btn-ghost" type="button">Reset</button>
           <span id="saveStatus" class="muted small"></span>
         </div>
-
-       
+      </div>
     </section>
 
     <!-- List -->
@@ -118,6 +130,7 @@
             <th>Order</th>
             <th>Question</th>
             <th>Correct</th>
+            <th>Module</th>
             <th>Slide</th>
             <th>ID</th>
             <th class="nowrap">Flags</th>
@@ -125,7 +138,7 @@
           </tr>
         </thead>
         <tbody id="questionsBody">
-          <tr><td colspan="7" class="muted">Press <b>Refresh</b> to load.</td></tr>
+          <tr><td colspan="8" class="muted">Press <b>Refresh</b> to load.</td></tr>
         </tbody>
       </table>
       <div class="row" style="justify-content: space-between;">

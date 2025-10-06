@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Training Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body{margin:0;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f7f7fb;color:#111827}
+    .wrap{max-width:1000px;margin:30px auto;padding:0 16px}
+    .bar{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+    .btn{height:36px;border:0;border-radius:8px;background:#111827;color:#fff;cursor:pointer;padding:6px 12px}
+    .muted{color:#6b7280}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+    .card{background:white;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 4px 16px rgba(0,0,0,.05);overflow:hidden}
+    .hd{padding:10px 12px;border-bottom:1px solid #e5e7eb;font-weight:600}
+    .bd{padding:12px}
+    input{height:36px;border:1px solid #e5e7eb;border-radius:8px;padding:6px 10px;width:100%}
+    .row{display:flex;gap:8px;align-items:center}
+    .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
+    .progress{height:8px;border-radius:999px;background:#e5e7eb;overflow:hidden}
+    .progress i{display:block;height:100%;width:0%;background:#2563eb}
+    .pill{display:inline-block;padding:2px 8px;border:1px solid #e5e7eb;border-radius:999px;font-size:12px;color:#374151}
+  </style>
+  <script src="./auth.js"></script>
+</head>
+<body onload="requireAuthOrRedirect()">
+  <div class="wrap">
+    <div class="bar">
+      <div>Dashboard — <span id="hello" class="muted"></span></div>
+      <div>
+        <button class="btn" onclick="logout()">Logout</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="hd">Modules</div>
+      <div class="bd">
+        <div class="row" style="margin-bottom:8px">
+          <input id="search" placeholder="Search modules by name">
+          <button class="btn" id="btnRefresh">Refresh</button>
+        </div>
+      </div>
+    </div>
+
+    <div style="height:16px"></div>
+
+    <div class="card">
+      <div class="hd">Your modules</div>
+      <div class="bd">
+        <div id="list" class="grid"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Airtable config (Questions + Answers table)
+    const AIR = {
+      API_KEY: "patTGK9HVgF4n1zqK.cbc0a103ecf709818f4cd9a37e18ff5f68c7c17f893085497663b12f2c600054",
+      BASE_ID: "app3rkuurlsNa7ZdQ",
+      Q_TABLE: "tblpvVpIJnkWco25E",   // Questions
+      A_TABLE: "tblkz5HyZGpgO093S",   // Answers
+    };
+    const email = localStorage.getItem('authEmail');
+    document.getElementById('hello').textContent = email || '';
+
+function h() {
+  return {
+    Authorization: `Bearer ${AIR.API_KEY}`,
+    "Content-Type": "application/json"
+  };
+}
+    const baseUrl = (t) => `https://api.airtable.com/v0/${AIR.BASE_ID}/${encodeURIComponent(t)}`;
+
+    async function fetchDistinctModules(){
+      // Pull all active questions and gather distinct Module values
+      const url = new URL(baseUrl(AIR.Q_TABLE));
+      url.searchParams.set('pageSize','100');
+      url.searchParams.set('filterByFormula', 'AND({Active}=1)');
+      let all = [], offset;
+      do {
+        if (offset) url.searchParams.set('offset', offset);
+        const res = await fetch(url.toString(), { headers: h() });
+        if (!res.ok) throw new Error('Questions load failed: '+res.status);
+        const data = await res.json();
+        all = all.concat(data.records||[]);
+        offset = data.offset;
+        if (offset){
+          const u = new URL(baseUrl(AIR.Q_TABLE));
+          u.searchParams.set('pageSize','100');
+          u.searchParams.set('filterByFormula','AND({Active}=1)');
+          url.search = u.search;
+        }
+      } while(offset);
+      const byModule = new Map();
+      for (const r of all){
+        const f = r.fields||{};
+        const m = (f.Module||'').trim();
+        if (!m) continue;
+        if (!byModule.has(m)) byModule.set(m, { name:m, qids:[] });
+        if (f.QuestionId) byModule.get(m).qids.push(String(f.QuestionId));
+      }
+      return byModule; // Map(moduleName -> {name, qids})
+    }
+
+    async function fetchAnswerCountForQids(userEmail, qids){
+      if (!userEmail || !qids.length) return 0;
+      // Build OR({QuestionId}='a', {QuestionId}='b', ...)
+      const orParts = qids.slice(0, 50).map(q => `{QuestionId}='${String(q).replace(/'/g, "\\'")}'`); // Airtable OR max args ~100; keep modest
+      const url = new URL(baseUrl(AIR.A_TABLE));
+      url.searchParams.set('pageSize','100');
+      url.searchParams.set('filterByFormula', `AND({UserEmail}='${String(userEmail).replace(/'/g, "\\'")}', OR(${orParts.join(',')}))`);
+      let count = 0, offset;
+      do {
+        if (offset) url.searchParams.set('offset', offset);
+        const res = await fetch(url.toString(), { headers: h() });
+        if (!res.ok) throw new Error('Answers load failed: '+res.status);
+        const data = await res.json();
+        count += (data.records||[]).length;
+        offset = data.offset;
+        if (offset){
+          const u = new URL(baseUrl(AIR.A_TABLE));
+          u.searchParams.set('pageSize','100');
+          u.searchParams.set('filterByFormula', `AND({UserEmail}='${String(userEmail).replace(/'/g, "\\'")}', OR(${orParts.join(',')}))`);
+          url.search = u.search;
+        }
+      } while(offset);
+      return count;
+    }
+
+    function pct(a,b){ return b ? Math.round((a*100)/b) : 0; }
+
+    async function render(){
+      const list = document.getElementById('list');
+      list.innerHTML = '<div class="muted">Loading modules…</div>';
+      try{
+        const byModule = await fetchDistinctModules();
+        const search = (document.getElementById('search').value||'').trim().toLowerCase();
+        const arr = Array.from(byModule.values()).filter(m => !search || m.name.toLowerCase().includes(search));
+        if (!arr.length){ list.innerHTML = '<div class="muted">No modules found.</div>'; return; }
+
+        // compute progress per module
+        const cards = [];
+        for (const m of arr){
+          const total = m.qids.length;
+          const done = await fetchAnswerCountForQids(email, m.qids);
+          const per = pct(done, total);
+          cards.push(`<div class="card">
+            <div class="hd">${m.name} <span class="pill">${total} question${total===1?'':'s'}</span></div>
+            <div class="bd">
+              <div class="progress"><i style="width:${per}%"></i></div>
+              <div class="row" style="margin-top:8px">
+                <button class="btn" onclick="window.location.href='index.html?module=${encodeURIComponent(m.name)}'">Open</button>
+                <span class="muted">${done}/${total} answered</span>
+              </div>
+            </div>
+          </div>`);
+        }
+        list.innerHTML = cards.join('');
+      } catch(e){
+        list.innerHTML = '<div class="muted">Failed to load. Check network/API key.</div>';
+        console.error(e);
+      }
+    }
+
+    document.getElementById('btnRefresh').addEventListener('click', render);
+    document.getElementById('search').addEventListener('input', render);
+    render();
+  </script>
+</body>
+</html>
