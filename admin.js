@@ -15,7 +15,6 @@ const $$ = sel => Array.from(document.querySelectorAll(sel));
 
 // ========= UI Map =========
 const ui = {
-  // Filters / list controls
   search: $("#search"),
   fltActive: $("#fltActive"),
   fltInactive: $("#fltInactive"),
@@ -23,7 +22,6 @@ const ui = {
   listStatus: $("#listStatus"),
   moduleGroups: $("#moduleGroups"),
 
-  // Form
   questionType: $("#questionType"),
   slideId: $("#slideId"),
   order: $("#order"),
@@ -35,23 +33,22 @@ const ui = {
   btnSave: $("#btnSave"),
   btnReset: $("#btnReset"),
 
-  // MC/FITB blocks
   mcBlock: $("#mcBlock"),
   fitbBlock: $("#fitbBlock"),
   fitbAnswers: $("#fitbAnswers"),
   fitbUseRegex: $("#fitbUseRegex"),
   fitbCaseSensitive: $("#fitbCaseSensitive"),
 
-  // Module helpers (for questions)
+  // Module controls (with '+ Add new…' reveal)
   moduleSelect: $("#moduleSelect"),
+  moduleNewWrap: $("#moduleNewWrap"),
   moduleInput: $("#moduleInput"),
   moduleChips: $("#moduleChips"),
 
-  // Toast
   toast: $("#toast"),
   toastMsg: $("#toastMsg"),
 
-  // INTUITIVE Assignments UI
+  // Titles & modules assignment UI
   titleSearch: document.getElementById('titleSearch'),
   titleSelect: document.getElementById('titleSelect'),
   btnSelectAllTitles: document.getElementById('btnSelectAllTitles'),
@@ -63,58 +60,37 @@ const ui = {
   btnSelectAllModules: document.getElementById('btnSelectAllModules'),
   btnClearModules: document.getElementById('btnClearModules'),
   moduleList: document.getElementById('moduleList'),
-  addModuleInput: document.getElementById('addModuleInput'),
-  btnAddModule: document.getElementById('btnAddModule'),
 
   btnAssign: document.getElementById('btnAssign'),
   btnUnassign: document.getElementById('btnUnassign'),
   assignStatus: document.getElementById('assignStatus'),
 
-  // NEW: Modules ↔ Titles matrix
   modTitleList: document.getElementById('modTitleList'),
 };
 
 // ========= Toast / Utils =========
 function toast(msg, kind="info", ms=1800){
-  try {
-    ui.toastMsg.textContent = msg;
-    ui.toast.classList.add("show");
-    setTimeout(() => ui.toast.classList.remove("show"), ms);
-  } catch {}
+  try { ui.toastMsg.textContent = msg; ui.toast.classList.add("show"); setTimeout(()=>ui.toast.classList.remove("show"), ms); } catch {}
 }
 function esc(s){ return String(s ?? "").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[m])); }
 const asBool = v => !!(v === true || v === "true" || v === 1 || v === "1" || v === "on");
-function safeParseJSON(v){ try { return JSON.parse(v); } catch { return Array.isArray(v) ? v : []; }}
-function parseListTextarea(text){
-  if (!text) return [];
-  return String(text).split(/\r?\n|,/g).map(s => s.trim()).filter(Boolean);
-}
-function debounce(fn, ms=200){
-  let t; return (...args)=>{ clearTimeout(t); t=setTimeout(()=>fn(...args), ms); };
-}
+function safeParseJSON(v){ try { return JSON.parse(v); } catch { return Array.isArray(v) ? v : []; } }
+function parseListTextarea(text){ if (!text) return []; return String(text).split(/\r?\n|,/g).map(s => s.trim()).filter(Boolean); }
+function debounce(fn, ms=200){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; }
 
-// ---------- titles sorting ----------
+// Sorting
 function sortTitlesAZ(list){
   return (Array.isArray(list) ? [...list] : []).sort((a,b)=>
     String(a?.title ?? "").trim().localeCompare(String(b?.title ?? "").trim(), undefined, {sensitivity:"base"})
   );
 }
 
-function headers(){
-  return {
-    "Authorization": `Bearer ${AIRTABLE.API_KEY}`,
-    "Content-Type": "application/json"
-  };
-}
+// Airtable helpers
+function headers(){ return { "Authorization": `Bearer ${AIRTABLE.API_KEY}`, "Content-Type":"application/json" }; }
 function baseUrl(tableId = AIRTABLE.TABLE_ID){
-  if (!AIRTABLE.BASE_ID || !tableId) {
-    console.error("[Admin] baseUrl missing pieces:", { base: AIRTABLE.BASE_ID, tableId });
-    throw new Error("Base URL undefined: missing BASE_ID or TABLE_ID");
-  }
+  if (!AIRTABLE.BASE_ID || !tableId) throw new Error("Base URL undefined: missing BASE_ID or TABLE_ID");
   return `https://api.airtable.com/v0/${AIRTABLE.BASE_ID}/${encodeURIComponent(tableId)}`;
 }
-
-// Basic CRUD
 async function readRecord(tableId, id){
   const url = `${baseUrl(tableId)}/${encodeURIComponent(id)}`;
   const res = await fetch(url, { headers: headers() });
@@ -151,31 +127,27 @@ async function deleteRecord(id){
 
 // ========= State =========
 const state = {
-  rows: [],            // questions
-  modules: new Set(),  // distinct module names from questions
-  manualModules: new Set(), // user-added module names
+  rows: [],
+  modules: new Set(),
+  manualModules: new Set(),
 
-  titles: [],             // [{id, title, assigned: string[]}]
+  titles: [],
   selectedTitleIds: [],
   assignedFieldName: AIRTABLE.TITLES_ASSIGNED_FIELD,
   mappingFieldName:  AIRTABLE.TITLES_MAPPING_FIELD,
   idsByTitleKey: Object.create(null),
   titleKeyById: Object.create(null),
 
-  // UI selections
-  selectedModules: new Set(), // module names selected in the moduleList
+  selectedModules: new Set(),
 };
 
-// ========= Question Options editor =========
+// ========= Options editor =========
 function addOption(value=""){
   const row = document.createElement("div");
-  row.className = "opt";
+  row.className = "opt inline";
   row.innerHTML = `
-    <input type="text" class="optText" placeholder="Option text" value="${esc(value)}">
-    <div class="mark hint">
-      <input type="radio" name="correctRadio" class="optCorrect">
-      <span>Correct</span>
-    </div>
+    <input type="text" class="optText grow" placeholder="" value="${esc(value)}">
+    <label class="hint inline"><input type="radio" name="correctRadio" class="optCorrect"> Correct</label>
     <button class="btn btn-ghost up" title="Move up">↑</button>
     <button class="btn btn-danger del" title="Remove">×</button>
   `;
@@ -204,23 +176,50 @@ function setOptions(arr=[], correctText=""){
   });
 }
 
-// ========= Module helpers (Questions) =========
-function currentModuleValue(){
-  const typed = (ui.moduleInput?.value || "").trim();
-  if (typed) return typed;
-  const sel = ui.moduleSelect;
-  return sel && sel.value ? sel.value : "";
-}
+// ========= Module helpers (Create/Edit) =========
+const ADD_NEW_VALUE = "__ADD_NEW__";
+
 function populateModuleSelect(modules){
   const sel = ui.moduleSelect; if (!sel) return;
-  const list = Array.from(modules).sort((a,b)=>a.localeCompare(b));
-  sel.innerHTML = `<option value="">(none)</option>` + list.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join("");
-  const chips = ui.moduleChips; if (chips){
+  const list = Array.from(new Set([
+    ...Array.from(modules || []),
+    ...Array.from(state.manualModules || [])
+  ])).sort((a,b)=>a.localeCompare(b));
+
+  sel.innerHTML =
+    `<option value="">(none)</option>` +
+    list.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join("") +
+    `<option value="${ADD_NEW_VALUE}">+ Add new…</option>`;
+
+  // Quick-pick chips
+  const chips = ui.moduleChips;
+  if (chips){
     chips.innerHTML = list.map(m => `<span class="chip" data-m="${esc(m)}">${esc(m)}</span>`).join("");
     chips.querySelectorAll('.chip').forEach(ch => ch.addEventListener('click', () => {
       if (ui.moduleSelect) ui.moduleSelect.value = ch.dataset.m || "";
+      if (ui.moduleNewWrap) ui.moduleNewWrap.classList.add("hide");
       if (ui.moduleInput) ui.moduleInput.value = "";
     }));
+  }
+}
+
+function currentModuleValue(){
+  const selVal = ui.moduleSelect ? ui.moduleSelect.value : "";
+  if (selVal === ADD_NEW_VALUE) {
+    return (ui.moduleInput?.value || "").trim();
+  }
+  return selVal || "";
+}
+
+function toggleModuleNewVisibility(){
+  const selVal = ui.moduleSelect ? ui.moduleSelect.value : "";
+  if (!ui.moduleNewWrap) return;
+  if (selVal === ADD_NEW_VALUE) {
+    ui.moduleNewWrap.classList.remove("hide");
+    setTimeout(()=>ui.moduleInput?.focus(), 0);
+  } else {
+    ui.moduleNewWrap.classList.add("hide");
+    if (ui.moduleInput) ui.moduleInput.value = "";
   }
 }
 
@@ -231,17 +230,29 @@ function updateTypeVisibility(){
   if (ui.fitbBlock) ui.fitbBlock.style.display = (type === "FITB") ? "" : "none";
 }
 
-// ========= Form helpers (Questions) =========
+// ========= Form helpers =========
 function genQuestionId(prefix="q"){ return `${prefix}_${Math.random().toString(36).slice(2,8)}`; }
+
 function readForm(){
   const type = (ui.questionType?.value || "MC").toUpperCase();
   const slide = (ui.slideId?.value || "").trim();
   const order = Number(ui.order?.value || 0);
   const qid = (ui.questionId?.value || "").trim() || genQuestionId("q");
   const qtext = (ui.questionText?.value || "").trim();
-  const moduleVal = currentModuleValue();
 
   if (!qtext) throw new Error("Question text is required.");
+
+  // Module value (with '+ Add new…' validation)
+  const selVal = ui.moduleSelect ? ui.moduleSelect.value : "";
+  const typed = (ui.moduleInput?.value || "").trim();
+  let moduleVal = "";
+  if (selVal === ADD_NEW_VALUE) {
+    if (!typed) throw new Error("Enter a new module name or choose an existing module.");
+    moduleVal = typed;
+    state.manualModules.add(moduleVal);
+  } else {
+    moduleVal = selVal || "";
+  }
 
   const fields = {
     "Type": type,
@@ -274,6 +285,7 @@ function readForm(){
   }
   return fields;
 }
+
 function fillForm(fields){
   const type = (fields["Type"] || "MC").toUpperCase();
   if (ui.questionType) ui.questionType.value = type;
@@ -285,7 +297,8 @@ function fillForm(fields){
   if (ui.questionText) ui.questionText.value = fields["Question"] || "";
 
   const m = fields["Module"] || "";
-  if (ui.moduleSelect) ui.moduleSelect.value = m;
+  if (ui.moduleSelect) ui.moduleSelect.value = m && optionExists(ui.moduleSelect, m) ? m : "";
+  if (ui.moduleNewWrap) ui.moduleNewWrap.classList.add("hide");
   if (ui.moduleInput) ui.moduleInput.value = "";
 
   if (type === "MC") {
@@ -298,6 +311,11 @@ function fillForm(fields){
     if (ui.fitbCaseSensitive) ui.fitbCaseSensitive.checked = asBool(fields["FITB Case Sensitive"]);
   }
 }
+
+function optionExists(selectEl, value){
+  return Array.from(selectEl.options).some(o => o.value === value);
+}
+
 function resetForm(){
   if (ui.questionType) ui.questionType.value = "MC";
   updateTypeVisibility();
@@ -306,6 +324,7 @@ function resetForm(){
   if (ui.questionId) ui.questionId.value = "";
   if (ui.questionText) ui.questionText.value = "";
   if (ui.moduleSelect) ui.moduleSelect.value = "";
+  if (ui.moduleNewWrap) ui.moduleNewWrap.classList.add("hide");
   if (ui.moduleInput) ui.moduleInput.value = "";
   setOptions(["",""]);
   if (ui.fitbAnswers) ui.fitbAnswers.value = "";
@@ -313,7 +332,7 @@ function resetForm(){
   if (ui.fitbCaseSensitive) ui.fitbCaseSensitive.checked = false;
 }
 
-// ========= Grouped modules view (Questions list) =========
+// ========= Questions list rendering =========
 function groupByModule(rows){
   const groups = new Map();
   rows.forEach(r => {
@@ -426,7 +445,7 @@ function renderModulesView(rows){
   });
 }
 
-// ========= List / search / paging (Questions) =========
+// ========= List / search / paging =========
 async function refreshList(){
   if (ui.listStatus) ui.listStatus.textContent = "Loading…";
   try {
@@ -437,7 +456,7 @@ async function refreshList(){
     renderModulesView(filterRows(ui.search ? ui.search.value : ""));
     if (ui.listStatus) ui.listStatus.textContent = `Loaded ${state.rows.length} question${state.rows.length===1?"":"s"}.`;
     renderModuleList();
-    renderModuleTitleLinker(); // keep matrix in sync
+    renderModuleTitleLinker();
   } catch (e) {
     console.error("[Admin] refreshList failed:", e);
     if (ui.listStatus) ui.listStatus.textContent = "Load failed.";
@@ -446,13 +465,8 @@ async function refreshList(){
 }
 
 // ========= Titles (load + helpers) =========
-function parseModulesFromLongText(v){
-  if (!v) return [];
-  return String(v).split(/[\n,;]+/g).map(s => s.trim()).filter(Boolean);
-}
-function joinModulesForLongText(arr){
-  return (arr || []).map(s => String(s).trim()).filter(Boolean).join("\n");
-}
+function parseModulesFromLongText(v){ if (!v) return []; return String(v).split(/[\n,;]+/g).map(s => s.trim()).filter(Boolean); }
+function joinModulesForLongText(arr){ return (arr || []).map(s => String(s).trim()).filter(Boolean).join("\n"); }
 function normalizeTitle(v) {
   if (v == null) return "";
   if (typeof v === "string") return v.trim();
@@ -464,43 +478,30 @@ function normalizeTitle(v) {
         if (typeof item.name === "string") return item.name.trim();
         if (typeof item.id === "string") return item.id;
       }
-    }
-    return v.length ? String(v[0]) : "";
+    } return v.length ? String(v[0]) : "";
   }
-  if (typeof v === "object") {
-    if (typeof v.name === "string") return v.name.trim();
-    return JSON.stringify(v);
-  }
+  if (typeof v === "object") { if (typeof v.name === "string") return v.name.trim(); return JSON.stringify(v); }
   try { return String(v); } catch { return ""; }
 }
 function detectAssignedFieldNameFromRecordFields(fieldsObj){
   if (!fieldsObj) return null;
   const keys = Object.keys(fieldsObj);
-  if (!keys.length) return null;
   const want = (AIRTABLE.TITLES_ASSIGNED_FIELD || "").toLowerCase();
   let found = keys.find(k => k.toLowerCase() === want);
   if (found) return found;
-  const cand = keys.find(k => {
-    const s = k.toLowerCase();
-    return s.includes("assigned") && s.includes("module");
-  });
+  const cand = keys.find(k => { const s = k.toLowerCase(); return s.includes("assigned") && s.includes("module"); });
   if (cand) return cand;
-  const modOnly = keys.find(k => k.toLowerCase().includes("modules"));
-  return modOnly || null;
+  return keys.find(k => k.toLowerCase().includes("modules")) || null;
 }
 function detectMappingFieldNameFromRecordFields(fieldsObj){
   if (!fieldsObj) return null;
   const keys = Object.keys(fieldsObj);
-  if (!keys.length) return null;
   if (AIRTABLE.TITLES_MAPPING_FIELD) {
     const want = AIRTABLE.TITLES_MAPPING_FIELD.toLowerCase();
     const exact = keys.find(k => k.toLowerCase() === want);
     if (exact) return exact;
   }
-  const cand = keys.find(k => {
-    const s = k.toLowerCase();
-    return s.includes("assigned") && (s.includes("map") || s.includes("mapping"));
-  });
+  const cand = keys.find(k => { const s = k.toLowerCase(); return s.includes("assigned") && (s.includes("map") || s.includes("mapping")); });
   return cand || null;
 }
 async function listAllTitlesPage(offset){
@@ -542,6 +543,7 @@ async function fetchDistinctTitles(){
     });
     offset = data.offset;
   } while (offset);
+
   state.assignedFieldName = detectedAssigned || state.assignedFieldName;
   state.mappingFieldName  = detectedMapping  || state.mappingFieldName;
 
@@ -554,7 +556,7 @@ async function fetchDistinctTitles(){
   state.titles = sortTitlesAZ(unique);
   populateTitleSelect(state.titles);
   updateTitleCount();
-  renderModuleTitleLinker(); // keep matrix in sync
+  renderModuleTitleLinker();
   return state.titles;
 }
 function populateTitleSelect(list){
@@ -562,11 +564,7 @@ function populateTitleSelect(list){
   const sorted = sortTitlesAZ(Array.isArray(list) ? list : []);
   ui.titleSelect.innerHTML = sorted.map(t => `<option value="${esc(t.id)}">${esc(t.title)}</option>`).join("");
 }
-function getSelectedTitleIds(){
-  const sel = ui.titleSelect;
-  if (!sel) return [];
-  return Array.from(sel.selectedOptions || []).map(o => o.value).filter(Boolean);
-}
+function getSelectedTitleIds(){ const sel = ui.titleSelect; if (!sel) return []; return Array.from(sel.selectedOptions || []).map(o => o.value).filter(Boolean); }
 function updateTitleCount(){
   if (!ui.titleCount) return;
   const total = state.titles.length;
@@ -579,25 +577,18 @@ function computeAssignedAgg(selectedIds){
   const chosen = state.titles.filter(t => selectedIds.includes(t.id));
   const lists = chosen.map(t => new Set((t.assigned || []).map(String)));
   if (lists.length === 0) return { all: new Set(), some: new Set() };
-  const union = new Set();
-  lists.forEach(s => s.forEach(x => union.add(x)));
+  const union = new Set(); lists.forEach(s => s.forEach(x => union.add(x)));
   let intersection = new Set(lists[0]);
-  for (let i=1;i<lists.length;i++){
-    const next = new Set();
-    lists[i].forEach(x => { if (intersection.has(x)) next.add(x); });
-    intersection = next;
-  }
+  for (let i=1;i<lists.length;i++){ const next = new Set(); lists[i].forEach(x => { if (intersection.has(x)) next.add(x); }); intersection = next; }
   return { all: intersection, some: union };
 }
 
-// Render modules list with badges (ALL / SOME / NONE) and selection state
 function renderModuleList(){
   if (!ui.moduleList) return;
   const query = (ui.moduleSearch?.value || "").toLowerCase().trim();
   const selectedTitles = getSelectedTitleIds();
   const { all, some } = computeAssignedAgg(selectedTitles);
 
-  // build full set = derived modules from questions + manual added modules
   const itemsSet = new Set([ ...Array.from(state.modules), ...Array.from(state.manualModules) ]);
   const items = Array.from(itemsSet).sort((a,b)=>a.localeCompare(b));
 
@@ -609,16 +600,9 @@ function renderModuleList(){
       return { name: m, rank: isAll ? 0 : (isSome ? 1 : 2), isAll, isSome };
     });
 
-  // default: assigned first
-  rows.sort((a,b) => {
-    if (a.rank !== b.rank) return a.rank - b.rank;
-    return a.name.localeCompare(b.name);
-  });
+  rows.sort((a,b) => (a.rank !== b.rank) ? a.rank - b.rank : a.name.localeCompare(b.name));
 
-  if (rows.length === 0) {
-    ui.moduleList.innerHTML = "";
-    return;
-  }
+  if (rows.length === 0) { ui.moduleList.innerHTML = ""; return; }
 
   ui.moduleList.innerHTML = rows.map(r => {
     const selected = state.selectedModules.has(r.name);
@@ -638,13 +622,11 @@ function renderModuleList(){
 
   ui.moduleList.querySelectorAll("li").forEach(li => {
     li.addEventListener("click", (ev) => {
-      if (ev.target && ev.target.matches(".pickbox")) { /* checkbox only */ }
       const mod = li.getAttribute("data-module");
       if (!mod) return;
       const selected = state.selectedModules.has(mod);
-      if (selected) { state.selectedModules.delete(mod); }
-      else { state.selectedModules.add(mod); }
-      renderModuleList(); // refresh classes
+      if (selected) state.selectedModules.delete(mod); else state.selectedModules.add(mod);
+      renderModuleList();
       updateAssignStatusText();
     });
   });
@@ -655,16 +637,10 @@ function updateAssignStatusText(){
   const selectedTitles = getSelectedTitleIds();
   const mods = Array.from(state.selectedModules);
   if (!ui.assignStatus) return;
-  if (!selectedTitles.length) {
-    ui.assignStatus.textContent = "Select one or more titles, then pick modules.";
-    return;
-  }
-  ui.assignStatus.textContent = mods.length
-    ? `Ready: ${mods.length} module(s) selected.`
-    : `All selected titles share the same module set.`;
+  if (!selectedTitles.length) { ui.assignStatus.textContent = "Select one or more titles, then pick modules."; return; }
+  ui.assignStatus.textContent = mods.length ? `Ready: ${mods.length} module(s) selected.` : `All selected titles share the same module set.`;
 }
 
-// Batch patch helper
 async function batchPatch(tableId, updates){
   const BATCH = 10;
   for (let i = 0; i < updates.length; i += BATCH) {
@@ -678,7 +654,6 @@ async function batchPatch(tableId, updates){
   }
 }
 
-// Assign selected modules to selected titles
 async function assignSelected(){
   const selectedIds = getSelectedTitleIds();
   if (!selectedIds.length) return toast("Select at least one title.", "bad");
@@ -702,7 +677,6 @@ async function assignSelected(){
   renderModuleTitleLinker();
 }
 
-// Unassign selected modules from selected titles
 async function unassignSelected(){
   const selectedIds = getSelectedTitleIds();
   if (!selectedIds.length) return toast("Select at least one title.", "bad");
@@ -726,28 +700,19 @@ async function unassignSelected(){
   renderModuleTitleLinker();
 }
 
-// ========= NEW: Module ↔ Titles matrix =========
+// ========= Module ↔ Titles matrix =========
 function buildModuleToTitlesMap(){
   const map = new Map();
   const allModules = new Set([ ...Array.from(state.modules), ...Array.from(state.manualModules) ]);
-  // Include modules that only exist via titles even if no questions
   state.titles.forEach(t => (t.assigned||[]).forEach(m => allModules.add(m)));
-
   allModules.forEach(m => map.set(m, []));
-  state.titles.forEach(t => {
-    (t.assigned || []).forEach(m => {
-      if (!map.has(m)) map.set(m, []);
-      map.get(m).push({ id: t.id, title: t.title });
-    });
-  });
+  state.titles.forEach(t => { (t.assigned || []).forEach(m => { if (!map.has(m)) map.set(m, []); map.get(m).push({ id: t.id, title: t.title }); }); });
   return map;
 }
-
 function titlesNotLinkedToModule(moduleName){
   const linkedIds = new Set((buildModuleToTitlesMap().get(moduleName) || []).map(t => t.id));
   return state.titles.filter(t => !linkedIds.has(t.id));
 }
-
 function renderModuleTitleLinker(){
   if (!ui.modTitleList) return;
   const map = buildModuleToTitlesMap();
@@ -762,7 +727,6 @@ function renderModuleTitleLinker(){
     ...modules.map((m, idx) => {
       const list = map.get(m) || [];
       const selectId = `mt-add-${idx}`;
-      const statusId = `mt-status-${idx}`;
       const options = titlesNotLinkedToModule(m).map(t => `<option value="${esc(t.id)}">${esc(t.title)}</option>`).join("");
       return `
         <div class="modtitle-card" data-module="${esc(m)}">
@@ -771,12 +735,9 @@ function renderModuleTitleLinker(){
             <div class="muted small">${list.length} title${list.length===1?"":"s"}</div>
           </div>
           <div class="chips">
-            ${
-              list.length
-                ? list
-                    .sort((a,b)=>a.title.localeCompare(b.title))
-                    .map(t => `<span class="chip" data-title-id="${esc(t.id)}"><span>${esc(t.title)}</span><span class="x" title="Remove from ${esc(m)}" aria-label="Remove">✕</span></span>`)
-                    .join("")
+            ${ list.length
+                ? list.sort((a,b)=>a.title.localeCompare(b.title))
+                      .map(t => `<span class="chip" data-title-id="${esc(t.id)}"><span>${esc(t.title)}</span><span class="x" title="Remove from ${esc(m)}" aria-label="Remove">✕</span></span>`).join("")
                 : `<span class="muted small">No titles linked.</span>`
             }
           </div>
@@ -786,7 +747,6 @@ function renderModuleTitleLinker(){
               ${options}
             </select>
             <button class="btn" data-add-for="${esc(m)}" data-select="#${selectId}">Add</button>
-            <span id="${statusId}" class="status"></span>
           </div>
         </div>
       `;
@@ -796,7 +756,7 @@ function renderModuleTitleLinker(){
 
   ui.modTitleList.innerHTML = html;
 
-  // Wire remove handlers
+  // Remove handlers
   ui.modTitleList.querySelectorAll(".chip .x").forEach(x => {
     x.addEventListener("click", async (ev) => {
       const chip = ev.currentTarget.closest(".chip");
@@ -804,38 +764,30 @@ function renderModuleTitleLinker(){
       const moduleName = card?.getAttribute("data-module");
       const titleId = chip?.getAttribute("data-title-id");
       if (!moduleName || !titleId) return;
-
       try {
         await unassignOne(titleId, moduleName);
         toast(`Removed "${moduleName}" from selected title.`, "ok");
         await fetchDistinctTitles();
         renderModuleTitleLinker();
         renderModuleList();
-      } catch(e){
-        console.error(e);
-        toast(e.message || "Unassign failed", "bad");
-      }
+      } catch(e){ console.error(e); toast(e.message || "Unassign failed", "bad"); }
     });
   });
 
-  // Wire add handlers
+  // Add handlers
   ui.modTitleList.querySelectorAll("[data-add-for]").forEach(btn => {
     btn.addEventListener("click", async () => {
       const moduleName = btn.getAttribute("data-add-for");
       const sel = ui.modTitleList.querySelector(btn.getAttribute("data-select"));
       const val = sel ? sel.value : "";
       if (!moduleName || !val) return;
-
       try {
         await assignOne(val, moduleName);
         toast(`Added title to "${moduleName}".`, "ok");
         await fetchDistinctTitles();
         renderModuleTitleLinker();
         renderModuleList();
-      } catch(e){
-        console.error(e);
-        toast(e.message || "Assign failed", "bad");
-      }
+      } catch(e){ console.error(e); toast(e.message || "Assign failed", "bad"); }
     });
   });
 }
@@ -848,7 +800,6 @@ async function assignOne(titleId, moduleName){
   fields[state.mappingFieldName]  = `${t?.title || ""}: ${fields[state.assignedFieldName]}`;
   await batchPatch(AIRTABLE.TITLES_TABLE_ID, [{ id: titleId, fields }]);
 }
-
 async function unassignOne(titleId, moduleName){
   const t = state.titles.find(x => x.id === titleId);
   const set = new Set((t?.assigned || []).filter(m => m !== moduleName));
@@ -858,11 +809,12 @@ async function unassignOne(titleId, moduleName){
   await batchPatch(AIRTABLE.TITLES_TABLE_ID, [{ id: titleId, fields }]);
 }
 
-// ========= Wire-up (events) =========
+// ========= Events =========
 if (ui.btnAddOption) ui.btnAddOption.addEventListener("click", () => addOption(""));
 if (ui.btnClearOptions) ui.btnClearOptions.addEventListener("click", () => setOptions(["",""]));
 if (ui.questionType) ui.questionType.addEventListener("change", updateTypeVisibility);
 
+// Save / Reset
 if (ui.btnSave) ui.btnSave.addEventListener("click", async (e) => {
   e.preventDefault();
   try {
@@ -871,11 +823,26 @@ if (ui.btnSave) ui.btnSave.addEventListener("click", async (e) => {
     toast("Created");
     resetForm();
     await refreshList();
-  } catch (err) {
-    toast(err?.message || "Save failed", "bad");
-  }
+  } catch (err) { toast(err?.message || "Save failed", "bad"); }
 });
 if (ui.btnReset) ui.btnReset.addEventListener("click", (e) => { e.preventDefault(); resetForm(); });
+
+// Module dropdown reveal: '+ Add new…'
+if (ui.moduleSelect) ui.moduleSelect.addEventListener("change", toggleModuleNewVisibility);
+// Commit new module name on Enter
+if (ui.moduleInput) ui.moduleInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    const name = (ui.moduleInput.value || "").trim();
+    if (!name) return;
+    state.manualModules.add(name);
+    // Rebuild dropdown so the new module appears as a normal option
+    populateModuleSelect(state.modules);
+    ui.moduleSelect.value = name;
+    toggleModuleNewVisibility();
+    toast(`Added module “${name}”`, "ok");
+  }
+});
 
 // Search/filter live for Questions list
 if (ui.search) ui.search.addEventListener('input', () => renderModulesView(filterRows(ui.search.value)));
@@ -893,8 +860,7 @@ if (ui.titleSearch) ui.titleSearch.addEventListener("input", debounce(() => {
   renderModuleList();
 }, 150));
 if (ui.btnSelectAllTitles) ui.btnSelectAllTitles.addEventListener("click", () => {
-  const opts = $$("#titleSelect option");
-  opts.forEach(o => o.selected = true);
+  const opts = $$("#titleSelect option"); opts.forEach(o => o.selected = true);
   ui.titleSelect.dispatchEvent(new Event("change"));
 });
 if (ui.btnClearTitles) ui.btnClearTitles.addEventListener("click", () => {
@@ -908,31 +874,10 @@ if (ui.btnSelectAllModules) ui.btnSelectAllModules.addEventListener("click", () 
   Array.from(itemsSet).forEach(m => state.selectedModules.add(m));
   renderModuleList();
 });
-if (ui.btnClearModules) ui.btnClearModules.addEventListener("click", () => {
-  state.selectedModules.clear();
-  renderModuleList();
-});
-if (ui.btnAddModule) ui.btnAddModule.addEventListener("click", () => {
-  const name = (ui.addModuleInput?.value || "").trim();
-  if (!name) return;
-  state.manualModules.add(name);
-  ui.addModuleInput.value = "";
-  renderModuleList();
-  renderModuleTitleLinker();
-});
+if (ui.btnClearModules) ui.btnClearModules.addEventListener("click", () => { state.selectedModules.clear(); renderModuleList(); });
 
 if (ui.btnAssign) ui.btnAssign.addEventListener("click", assignSelected);
 if (ui.btnUnassign) ui.btnUnassign.addEventListener("click", unassignSelected);
-
-// Keyboard shortcuts in module list: A = select all, U = clear
-document.addEventListener("keydown", (e) => {
-  const tag = (e.target && (e.target.tagName||"")).toLowerCase();
-  if (tag === "input" || tag === "textarea" || tag === "select") return;
-  if (e.key.toLowerCase() === "a") { e.preventDefault();
-    const itemsSet = new Set([ ...Array.from(state.modules), ...Array.from(state.manualModules) ]);
-    Array.from(itemsSet).forEach(m=>state.selectedModules.add(m)); renderModuleList(); }
-  if (e.key.toLowerCase() === "u") { e.preventDefault(); state.selectedModules.clear(); renderModuleList(); }
-});
 
 // ========= Init =========
 (async function init(){
@@ -943,8 +888,6 @@ document.addEventListener("keydown", (e) => {
     await fetchDistinctTitles();
     renderModuleList();
     renderModuleTitleLinker();
-  } catch (e) {
-    console.error(e);
-    toast(e.message || "Init failed", "bad");
-  }
+    toggleModuleNewVisibility(); // ensure hidden on load
+  } catch (e) { console.error(e); toast(e.message || "Init failed", "bad"); }
 })();
