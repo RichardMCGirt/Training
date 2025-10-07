@@ -6,7 +6,6 @@
   const AIRTABLE = {
     API_KEY: "patTGK9HVgF4n1zqK.cbc0a103ecf709818f4cd9a37e18ff5f68c7c17f893085497663b12f2c600054",
     BASE_ID:  "app3rkuurlsNa7ZdQ",
-    // You can use the table *name* (e.g., "Table3") or the *table id* (e.g., "tblXXXX").
     MODULES_TABLE_ID: "Table3"
   };
 const norm = s => String(s||"").toLowerCase().trim();
@@ -18,7 +17,7 @@ const norm = s => String(s||"").toLowerCase().trim();
       "Content-Type": "application/json"
     };
   }
-  // Alias to prevent "h is not defined" if other snippets call h()
+
   function h(){ return headers(); }
 
   const baseUrl = (t) => `https://api.airtable.com/v0/${AIRTABLE.BASE_ID}/${encodeURIComponent(t)}`;
@@ -76,7 +75,6 @@ const norm = s => String(s||"").toLowerCase().trim();
     }
   } while (offset);
 
-  // extra safety: client-side strict filter
   return out.filter(r => norm(r?.fields?.Module) === norm(moduleName));
 }
 
