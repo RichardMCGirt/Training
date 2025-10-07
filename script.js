@@ -501,122 +501,60 @@ window.addEventListener("keydown", (e) => {
 });
 
 /* ------------------ Submit + save ----------------------------------------- */
-async function submitAnswer() {
-  const slide = state.slides[state.i];
-  const quiz  = (function(){
-    const slideQ = currentQuizForIndex(state.i);
-    return slideQ || null;
-  })();
-
+async function submitAnswer(){
+  const quiz = currentQuizForIndex(state.i);
   if (!quiz) return;
 
-  const answerRaw = getUserAnswer(quiz);
-  const answer = String(answerRaw || "").trim();
-  if (!answer) return pulse("Provide an answer.", "warn");
+  const userEmail = (el.userEmail?.value || localStorage.getItem('trainingEmail') || '').trim();
+  if (!userEmail) return pulse("Enter your email to save.", "warn");
+
+  const ans = getUserAnswer(quiz);
+  if (!ans && quiz.required) return pulse("Answer required.", "warn");
 
   // Correctness
-  let isCorrect = false;
+  let isCorrect = true;
   if (quiz.type === "MC") {
-    isCorrect = !!(quiz.correct && answer === String(quiz.correct).trim());
+    isCorrect = ans === quiz.correct;
   } else {
-    isCorrect = isFitbCorrect(
-      answerRaw,
-      quiz.fitbAnswers,
-      { useRegex: !!quiz.fitbUseRegex, caseSensitive: !!quiz.fitbCaseSensitive }
-    );
+    isCorrect = isFitbCorrect(ans, quiz.fitbAnswers, { useRegex: quiz.fitbUseRegex, caseSensitive: quiz.fitbCaseSensitive });
   }
 
-  // Update local state & advance immediately
-  state.answers[quiz.questionId] = { answer, isCorrect };
-
-  // In retake mode: linear next slide, no resume/merge, no jumping
-  if (state.retake) {
-    state.i = clamp(state.i + 1, 0, state.slides.length - 1);
-    render();
-
-    // Show Retry if all answered
-    if (isAllAnswered() && el.retryRow) el.retryRow.style.display = "flex";
-  } else {
-    // Normal mode with resume awareness
-    state.i = clamp(state.i + 1, 0, state.slides.length - 1);
-    try {
-      const prior = await loadExistingAnswersForUser(
-        state.presentationId,
-        (el.userEmail?.value || localStorage.getItem('trainingEmail') || '').trim()
-      );
-      state.answers = Object.assign({}, prior, state.answers);
-    } catch (e) {
-      console.warn('Resume load failed', e);
+  // Save to local resume map (normal mode), but do NOT overwrite a prior correct answer
+  if (!state.retake) {
+    const prev = state.answers[quiz.questionId];
+    if (!(prev && prev.isCorrect === true)) {
+      state.answers[quiz.questionId] = { answer: ans, isCorrect, at: Date.now() };
     }
-    state.i = nextUnansweredIndex();
-    render();
-
-    if (isAllAnswered() && el.retryRow) el.retryRow.style.display = "flex";
   }
 
-  const payload = {
-    userEmail: (el.userEmail?.value || "").trim(),
-    presentationId: state.presentationId,
-    slideId: slide?.objectId || "",
-    questionId: quiz.questionId,
-    question: quiz.question,
-    answer,
-    correctAnswer: quiz.type === "MC" ? quiz.correct : (quiz.fitbAnswers || []).join(" | "),
-    isCorrect,
-    result: isCorrect ? "Correct" : "Wrong",
-    timestamp: new Date().toISOString(),
-    Type: quiz.type
+  // Persist to Airtable (answers log with Wrong Attempts)
+  const baseFields = {
+    UserEmail: userEmail,
+    PresentationId: state.presentationId,
+    QuestionId: quiz.questionId,
+    Answer: ans,
+    IsCorrect: !!isCorrect
   };
-
-  // Optional primary save path (webhook/custom)
   try {
-    if (typeof upsertAirtableBySlideAndEmail === "function" &&
-        window.AIRTABLE_API_KEY && window.AIRTABLE_BASE_ID && window.AIRTABLE_TABLE) {
-      await upsertAirtableBySlideAndEmail(payload.slideId, payload.userEmail, {
-        PresentationId: payload.presentationId,
-        "Slide ID": payload.slideId,
-        QuestionId: payload.questionId,
-        Answer: payload.answer,
-        IsCorrect: payload.isCorrect,
-        UserEmail: payload.userEmail,
-        Timestamp: payload.timestamp
-      });
-    } else if (window.AIRTABLE_WEBHOOK_URL) {
-      await fetch(window.AIRTABLE_WEBHOOK_URL, {
-        method:"POST",
-        headers:{ "Content-Type":"application/json" },
-        body: JSON.stringify(payload)
-      });
-    }
+    await upsertAnswerRecordWithWrongCount(baseFields);
+    pulse(isCorrect ? "Saved ✓" : "Saved (wrong)", isCorrect ? "ok" : "warn");
   } catch (e) {
-    console.warn("[primary save] failed:", e);
+    console.error(e);
+    pulse("Save failed", "bad");
   }
 
-  // Authoritative upsert with wrong attempts
-  try {
-    await upsertAnswerRecordWithWrongCount({
-      UserEmail: payload.userEmail,
-      PresentationId: payload.presentationId,
-      "Slide ID": payload.slideId,
-      QuestionId: payload.questionId,
-      Question: payload.question,
-      Answer: payload.answer,
-      CorrectAnswer: payload.correctAnswer,
-      IsCorrect: payload.isCorrect,
-      Result: payload.result,
-      Timestamp: payload.timestamp,
-      Type: payload.Type
-    });
-    pulse("Saved.", "ok");
-    saveLocalProgress();
-  } catch (err) {
-    console.error(err);
-    pulse("Save failed.", "bad");
+  // Always continue to next slide after submit (even if wrong)
+  if (state.i < state.slides.length - 1) {
+    state.i += 1;
+    render();
+  } else {
+    // End of deck — show retry UI
+    if (el.retryRow) el.retryRow.style.display = "flex";
   }
 }
 
-if (el.btnSubmit) el.btnSubmit.removeEventListener("click", submitAnswer);
 if (el.btnSubmit) el.btnSubmit.addEventListener("click", submitAnswer);
+
 
 /* ------------------ Local progress ---------------------------------------- */
 function saveLocalProgress(){

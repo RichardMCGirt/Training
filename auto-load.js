@@ -4,6 +4,17 @@
   const TAG = "[auto-load]";
   let running = false;
   let hasRunThisShow = false;
+const NAV_TOKEN = (() => {
+  try {
+    const token = Date.now() + ":" + Math.random().toString(36).slice(2,8);
+    // Store in sessionStorage; cleared on new tab/window
+    sessionStorage.setItem("__auto_load_nav_token", token);
+    return token;
+  } catch { return "fallback"; }
+})();
+function getLastRunToken(){ try { return sessionStorage.getItem("__auto_load_last_run"); } catch { return ""; } }
+function setLastRunToken(v){ try { sessionStorage.setItem("__auto_load_last_run", v); } catch {} }
+
 
   log("init");
   whenReady(runOnce);
@@ -19,9 +30,12 @@
     }
   });
 
-  async function runOnce(origin="first-load"){
-    if (running) { log("runOnce skipped (already running)", { origin }); return; }
-    running = true;
+ async function runOnce(origin="first-load"){
+  if (running) { log("runOnce skipped (already running)", { origin }); return; }
+  const last = getLastRunToken();
+  if (last === NAV_TOKEN) { log("runOnce skipped (same nav token)", { origin }); return; }
+  running = true;
+  setLastRunToken(NAV_TOKEN);
     console.groupCollapsed(`${TAG} run (${origin})`);
     try {
       await ensureElements(["presentationId","btnLoad"]);
@@ -159,3 +173,4 @@
   function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
   function log(){ try { console.log(TAG, ...arguments); } catch{} }
 })();
+

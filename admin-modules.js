@@ -36,6 +36,21 @@
       box.innerHTML = `<div class="muted">Failed to load mappings.</div>`;
     }
   }
+// Make sure quick chips mirror Admin's module chips
+function wireQuickChips(){
+  const chipsHost = document.querySelector("#moduleChips");
+  const dest = document.querySelector("#modmap-quick");
+  if (!chipsHost || !dest) return;
+  dest.innerHTML = chipsHost.innerHTML;
+  dest.querySelectorAll(".chip").forEach(ch => {
+    ch.addEventListener("click", () => {
+      document.querySelector("#modmap-module").value = ch.dataset.m || ch.textContent.trim();
+    });
+  });
+}
+
+// Call this once on init (after DOM ready)
+document.addEventListener("DOMContentLoaded", wireQuickChips, { once: true });
 
   function showForm(initial={}){
     $("#modmap-id").value = initial.id||"";
