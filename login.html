@@ -5,20 +5,10 @@
   <meta charset="utf-8">
   <title>Login</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    body{margin:0;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f7f7fb;color:#111827}
-    .wrap{max-width:420px;margin:60px auto;padding:0 16px}
-    .card{background:white;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 4px 16px rgba(0,0,0,.05);overflow:hidden}
-    .hd{padding:14px 16px;border-bottom:1px solid #e5e7eb;font-weight:600}
-    .bd{padding:16px}
-    .row{display:flex;flex-direction:column;gap:8px;margin-bottom:12px}
-    input{height:40px;border:1px solid #e5e7eb;border-radius:8px;padding:6px 10px}
-    .btn{height:40px;border:0;border-radius:8px;background:#111827;color:#fff;cursor:pointer}
-    .alt{display:flex;gap:8px}
-    .muted{color:#6b7280}
-    #msg{min-height:20px;margin-top:8px}
-  </style>
+  
   <script src="./auth.js"></script>
+    <link rel="stylesheet" href="login.css">
+
 </head>
 <body>
   <div class="wrap">
@@ -33,26 +23,8 @@
       </div>
     </div>
   </div>
-  <script>
-  const email = document.getElementById('email');
-  const password = document.getElementById('password');
-  const msg = document.getElementById('msg');
 
-  // Prefill email if remembered
-  const saved = localStorage.getItem('trainingEmail') || localStorage.getItem('authEmail');
-  if (saved) email.value = saved;
+    <script src="login.js"></script>
 
-  document.getElementById('btnLogin').addEventListener('click', async () => {
-    try {
-      msg.textContent = 'Logging in…';
-      await loginWithEmailPassword(email.value.trim(), password.value);
-      msg.textContent = 'Success! Redirecting…';
-      window.location.href = './dashboard.html';
-    } catch (e) {
-      msg.textContent = e.message || 'Login failed';
-    }
-  });
- 
-  </script>
 </body>
 </html>

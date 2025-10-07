@@ -4,44 +4,9 @@
   <meta charset="utf-8">
   <title>Slides Training – Deck + Airtable Quiz</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    :root { --gap: 16px; --card-bg:#fff; --muted:#6b7280; --border:#e5e7eb; --accent:#2563eb; }
-    * { box-sizing: border-box; }
-    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background:#f7f7fb; color:#111827; }
-    .wrap { max-width: 1200px; margin: 24px auto; padding: 0 16px; }
-    h1 { font-size: 20px; margin: 0 0 16px; }
-    .controls { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom: var(--gap); }
-    .controls input, .controls button { height: 36px; }
-    .controls input[type="text"] { padding: 6px 10px; border:1px solid var(--border); border-radius:8px; min-width: 260px; }
-    .btn { background:#111827; color:#fff; border:0; border-radius:8px; padding:6px 12px; cursor:pointer; }
-    .btn:disabled { opacity:0.5; cursor:not-allowed; }
-    .muted { color: var(--muted); }
-    .pill { font-size: 12px; padding: 2px 8px; border:1px solid var(--border); border-radius:999px; margin-left:8px; color:#374151; }
+ 
+    <link rel="stylesheet" href="index.css">
 
-    .grid { display: grid; grid-template-columns: 1fr 420px; gap: var(--gap); align-items: start; }
-    @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } }
-
-    .card { background: var(--card-bg); border:1px solid var(--border); border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.04); overflow: hidden; }
-    .card .hd { padding: 12px 14px; border-bottom: 1px solid var(--border); font-weight: 600; }
-    .card .bd { padding: 12px; }
-
-    #embedCard { display:none; }
-    #slidesEmbed { width:100%; height: 520px; border:0; background:#fafafa; }
-
-    #quizBox .opt { display:flex; gap:10px; align-items: flex-start; border:1px solid var(--border); border-radius:8px; padding:10px; margin:10px 0; background:#fafafa; }
-    #quizBox .opt input { transform: translateY(2px); }
-    #saveStatus.ok { color: #059669; } #saveStatus.warn { color: #b45309; } #saveStatus.bad { color: #b91c1c; }
-
-    .row { display:flex; align-items:center; gap:8px; flex-wrap: wrap; }
-    #bar { height:8px; background:#e5e7eb; border-radius:999px; overflow:hidden; margin: 8px 0 0; }
-    #bar > i { display:block; height:100%; width:0%; background: var(--accent); }
-
-    /* Hide the Load button */
-    #btnLoad, #presentationId { display:none !important; }
-
-    /* Retry button row */
-    #retryRow { display:none; margin-top:12px; }
-  </style>
   <script src="./auth.js"></script>
 </head>
 <body onload="requireAuthOrRedirect()">
