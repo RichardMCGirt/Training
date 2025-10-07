@@ -1,76 +1,87 @@
-// auto-load.js (BFCache + cache-bust + idempotent)
-// Fills the Slides ID and triggers the same flow you proved in console.
-
 (function(){
   "use strict";
 
-  const SLIDES_ID = "1lsNam3OMuol_lxdplqXKQJ57D8m2ZHUaGxdmdx2uwEQ";
   const TAG = "[auto-load]";
-  let running = false;                 // prevents re-entrancy while in-flight
-  let hasRunThisShow = false;          // prevents double-run per pageshow
+  let running = false;
+  let hasRunThisShow = false;
 
   log("init");
-
-  // 1) Run on first parse
   whenReady(runOnce);
-
-  // 2) ALSO run on BFCache restores (e.g., back button, history nav)
   window.addEventListener("pageshow", (ev) => {
     const navEntries = performance.getEntriesByType("navigation");
     const navType = navEntries && navEntries[0] ? navEntries[0].type : "(unknown)";
     log("pageshow", { persisted: ev.persisted, navType });
-
-    // some browsers set persisted=true; others report navType "back_forward"
     if (ev.persisted || navType === "back_forward") {
-      if (!hasRunThisShow) {
-        hasRunThisShow = true;
-        runOnce("pageshow");
-      } else {
-        log("pageshow ignored (already ran this show).");
-      }
+      if (!hasRunThisShow) { hasRunThisShow = true; runOnce("pageshow"); }
+      else { log("pageshow ignored (already ran this show)."); }
     } else {
-      hasRunThisShow = false; // normal navigation; allow future run
+      hasRunThisShow = false;
     }
   });
-
-  // Optional: console helper to force a re-run
-  window.forceSlidesLoad = () => runOnce("manual");
 
   async function runOnce(origin="first-load"){
     if (running) { log("runOnce skipped (already running)", { origin }); return; }
     running = true;
     console.groupCollapsed(`${TAG} run (${origin})`);
     try {
-      // If your app constructs the GAS URL using a global, monkey-patch a cache-bust hook.
-      // (Safe no-op if not present.)
-      tryAttachCacheBuster();
-
-      // Wait for DOM + elements (handles SPA-delayed DOM as well)
       await ensureElements(["presentationId","btnLoad"]);
       const input = document.getElementById("presentationId");
       const btn   = document.getElementById("btnLoad");
 
-      // Fill like a real user
-      try { input.focus(); } catch {}
-      input.value = SLIDES_ID;
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      input.dispatchEvent(new Event("change", { bubbles: true }));
-      log("Filled Slides ID");
+      // 1) Resolve selected module
+      const params = new URLSearchParams(location.search);
+      const selectedModule = params.get("module") || localStorage.getItem("selectedModule") || "";
 
-      // Prefer form submit if present; otherwise click the button
-      const form = input.form || document.querySelector("form");
-      if (form && typeof form.requestSubmit === "function") {
-        form.requestSubmit(btn);
-        log("requestSubmit() fired");
-      } else if (form) {
-        const ok = form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-        if (ok) btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-        log("submit event + click fallback fired");
-      } else {
-        btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-        log("direct click fired");
+      // 2) If hard-coded ?presentationId=… is present, allow direct load
+      const directPid = params.get("presentationId") || "";
+      if (!selectedModule && directPid) {
+        // optional GAS endpoint via query too
+        const gasFromQuery = params.get("gas");
+        if (gasFromQuery) window.GAS_ENDPOINT = gasFromQuery;
+        await fillAndSubmit(input, btn, directPid);
+        return;
       }
-    } catch (e) {
+
+      if (!selectedModule) {
+        log("No module selected and no presentationId in query; skipping auto-load.");
+        return;
+      }
+
+      // 3) Lookup module config (Presentation ID + GAS URL)
+      let cfg = { presentationId:"", gasUrl:"", active:false };
+      if (window.trainingModules?.getConfigForModule) {
+        try {
+          cfg = await window.trainingModules.getConfigForModule(selectedModule);
+        } catch(e){
+          console.warn(TAG, "Airtable lookup failed:", e);
+        }
+      }
+
+      const presId = (cfg.presentationId || "").trim();
+      if (!presId) {
+        console.warn(TAG, "No Presentation ID found for module:", selectedModule);
+        return; // Let admin populate it
+      }
+
+      // Expose GAS endpoint globally for any code that needs it (optional)
+      if (cfg.gasUrl) window.GAS_ENDPOINT = cfg.gasUrl;
+
+      // 4) Cache-bust GAS calls automatically (safe no-op if unused)
+      tryAttachCacheBuster();
+
+      // 5) Fill and submit
+      await fillAndSubmit(input, btn, presId);
+
+      // 6) Keep the user's email in localStorage up-to-date
+      const inputE = document.getElementById('userEmail');
+      if (inputE) {
+        const savedEmail = localStorage.getItem('trainingEmail') || localStorage.getItem('authEmail') || '';
+        if (savedEmail && !inputE.value) inputE.value = savedEmail;
+        inputE.addEventListener('input', () => {
+          localStorage.setItem('trainingEmail', inputE.value.trim());
+        });
+      }
+    } catch(e){
       console.error(TAG, "run failed:", e);
     } finally {
       console.groupEnd();
@@ -78,11 +89,33 @@
     }
   }
 
+  async function fillAndSubmit(input, btn, presentationId){
+    // Fill like a real user
+    try { input.focus(); } catch {}
+    input.value = presentationId;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    log("Filled Slides ID", { presentationId });
+
+    // Prefer form submit if present; otherwise click the button
+    const form = input.form || document.querySelector("form");
+    if (form && typeof form.requestSubmit === "function") {
+      form.requestSubmit(btn);
+      log("requestSubmit() fired");
+    } else if (form) {
+      const ok = form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      if (ok) btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      log("submit event + click fallback fired");
+    } else {
+      btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      log("direct click fired");
+    }
+  }
+
   function whenReady(fn){
     if (document.readyState === "loading") {
       document.addEventListener("DOMContentLoaded", fn, { once: true });
     } else {
-      // Even if DOM is "complete", SPAs may still be hydrating—delay a tick
       setTimeout(fn, 0);
     }
   }
@@ -97,12 +130,8 @@
     throw new Error("Required elements not found: " + ids.join(", "));
   }
 
-  // Adds a timestamp param to GAS requests if your app exposes a builder.
-  // If not applicable, harmlessly does nothing.
+  // Adds a timestamp param to GAS requests automatically (optional)
   function tryAttachCacheBuster(){
-    // Example: if your app uses a global GAS_ENDPOINT variable and fetches like:
-    // fetch(`${GAS_ENDPOINT}?presentationId=...&size=LARGE`)
-    // this override adds &_cb=TIMESTAMP automatically.
     try {
       const origFetch = window.fetch;
       if (!origFetch || origFetch.__autoLoadPatched) return;
@@ -128,42 +157,5 @@
   }
 
   function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
-  function log(msg, extra){ try{ console.log(TAG, msg, extra||""); }catch{} }
-
-})();
-// auto-load.js — lightweight helper for prefilling inputs and auto-loading a deck
-// IMPORTANT: This file does NOT post answers to Airtable. All saving is handled in script.js.
-
-(function(){
-  const params = new URLSearchParams(location.search);
-  const pid = params.get('presentationId') || '';
-  const reset = params.get('reset') === '1';
-
-  const inputP = document.getElementById('presentationId');
-  const inputE = document.getElementById('userEmail');
-
-  const savedEmail = localStorage.getItem('trainingEmail') || localStorage.getItem('authEmail') || '';
-  if (inputP && pid) inputP.value = pid;
-  if (inputE && savedEmail) inputE.value = savedEmail;
-
-  // wipe local progress if requested
-  if (pid && reset && inputE) {
-    const email = inputE.value.trim();
-    if (email) {
-      const key = `progress:${email}:${pid}`;
-      localStorage.removeItem(key);
-    }
-  }
-
-  // keep email in localStorage
-  if (inputE) inputE.addEventListener('input', () => {
-    localStorage.setItem('trainingEmail', inputE.value.trim());
-  });
-
-  // Auto-load deck if a presentationId is present
-  window.addEventListener('DOMContentLoaded', () => {
-    if (pid && typeof window.onLoadDeckClick === 'function') {
-      window.onLoadDeckClick(pid);
-    }
-  });
+  function log(){ try { console.log(TAG, ...arguments); } catch{} }
 })();

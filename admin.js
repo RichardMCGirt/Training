@@ -1,20 +1,13 @@
-// admin.js – Questions editor + Assignments + Delete + FITB support
-// Uses Title only for listing; NEVER patches the Title field.
 
 // ========= Airtable Config =========
 const AIRTABLE = {
   API_KEY: "patTGK9HVgF4n1zqK.cbc0a103ecf709818f4cd9a37e18ff5f68c7c17f893085497663b12f2c600054",
   BASE_ID: "app3rkuurlsNa7ZdQ",
-  // Questions table (stores quiz questions)
   TABLE_ID: "tblpvVpIJnkWco25E",
-  // Titles table (stores Job Titles and Assigned Modules long text)
   TITLES_TABLE_ID: "tblppx6qNXXNJL7ON",
-  // Display/title field in Titles table (synced). We use it for listing only; DO NOT PATCH IT.
   TITLES_FIELD_NAME: "Title",
-  // Long text field holding modules; if label differs in Airtable, we’ll auto-detect it.
   TITLES_ASSIGNED_FIELD: "Assigned Modules",
-  // Optional mapping field (long text) like "Title: m1, m2". Leave null to auto-detect or skip.
-  TITLES_MAPPING_FIELD: "Assigned Modules Mapping" // <- writable long text
+  TITLES_MAPPING_FIELD: "Assigned Modules Mapping" 
 };
 
 // ========= Tiny DOM Helpers =========
@@ -65,6 +58,7 @@ const ui = {
   btnReloadTitles: $("#btnReloadTitles"),
   moduleChecklist: $("#moduleChecklist"),
   btnSaveAssignment: $("#btnSaveAssignment"),
+  btnUnassignModule: $("#btnUnassignModule"),
   btnClearAssignment: $("#btnClearAssignment"),
   assignStatus: $("#assignStatus")
 };
@@ -677,7 +671,7 @@ function onTitleChange(){
   rebuildChecklistForCurrentSelection();
 }
 
-// Save assignment — minimal (preview-style merge)
+// Save assignment — merge the selected module into Assigned Modules
 async function saveAssignment(){
   const pickedIds = state.selectedTitleIds;
   if (!pickedIds.length) { toast("Pick at least one Title.", "bad"); return; }
@@ -719,11 +713,73 @@ async function saveAssignment(){
       await res.json();
     }
     toast(`Updated ${toPatch.length} record(s).`);
+    await fetchDistinctTitles();
+    rebuildChecklistForCurrentSelection();
   } catch (e) {
     console.error(e);
     toast("Save failed", "bad");
   }
 }
+
+// NEW: Unassign (remove) the selected module from Assigned Modules
+async function unassignAssignment(){
+  const pickedIds = state.selectedTitleIds;
+  if (!pickedIds.length) { toast("Pick at least one Title.", "bad"); return; }
+
+  const targetModule = currentModuleValue().trim();
+  if (!targetModule) { toast("Pick a Module (above) to unassign.", "bad"); return; }
+
+  const expandedIds = Array.from(new Set(pickedIds.flatMap(id => {
+    const key = state.titleKeyById[id];
+    return key ? (state.idsByTitleKey[key] || [id]) : [id];
+  })));
+
+  const fieldName   = state.assignedFieldName || AIRTABLE.TITLES_ASSIGNED_FIELD;
+  const mappingField = state.mappingFieldName || null;
+  if (!fieldName) { toast("Assigned field not found.", "bad"); return; }
+
+  try {
+    const toPatch = [];
+    for (const id of expandedIds) {
+      const rec = await readRecord(AIRTABLE.TITLES_TABLE_ID, id);
+      const f = rec.fields || {};
+      const titleTxt = normalizeTitle(f[AIRTABLE.TITLES_FIELD_NAME]);
+      const currentRaw  = f[fieldName];
+      const currentList = parseModulesFromLongText(currentRaw);
+
+      // remove the module (case-sensitive exact match)
+      const nextArr = currentList.filter(m => m !== targetModule);
+      // no-op if unchanged
+      const nextText = joinModulesForLongText(nextArr);
+      if (nextText === (currentRaw == null ? "" : String(currentRaw))) continue;
+
+      const fields = { [fieldName]: nextText };
+      if (mappingField) fields[mappingField] = `${titleTxt}: ${nextArr.join(", ")}`;
+      toPatch.push({ id, fields });
+    }
+
+    if (!toPatch.length) { toast("Nothing to update.", "bad"); return; }
+
+    for (let i=0; i<toPatch.length; i+=10) {
+      const chunk = toPatch.slice(i, i+10);
+      const res = await fetch(baseUrl(AIRTABLE.TITLES_TABLE_ID), {
+        method: "PATCH",
+        headers: headers(),
+        body: JSON.stringify({ records: chunk, typecast: true })
+      });
+      if (!res.ok) throw new Error(`Unassign failed HTTP ${res.status} – ${await res.text()}`);
+      await res.json();
+    }
+
+    toast(`Unassigned “${targetModule}” from ${toPatch.length} record(s).`);
+    await fetchDistinctTitles();
+    rebuildChecklistForCurrentSelection();
+  } catch (e) {
+    console.error(e);
+    toast(e?.message || "Unassign failed", "bad");
+  }
+}
+
 function getSelectedTitleIds(){
   const sel = ui.titleSelect;
   if (!sel) return [];
@@ -761,19 +817,20 @@ if (ui.btnReloadTitles) ui.btnReloadTitles.addEventListener("click", async () =>
 });
 if (ui.titleSelect) ui.titleSelect.addEventListener("change", onTitleChange);
 if (ui.btnSaveAssignment) ui.btnSaveAssignment.addEventListener("click", saveAssignment);
+if (ui.btnUnassignModule) ui.btnUnassignModule.addEventListener("click", unassignAssignment);
 if (ui.btnClearAssignment) ui.btnClearAssignment.addEventListener("click", () => {
   ui.assignStatus && (ui.assignStatus.textContent = "Cleared (not saved).");
 });
 
 // Search/filter live
-if (ui.search) ui.search.addEventListener('input', () => renderModulesView(filterRows(ui.search.value)));
-if (ui.fltActive) ui.fltActive.addEventListener('change', () => renderModulesView(filterRows(ui.search.value)));
-if (ui.fltInactive) ui.fltInactive.addEventListener('change', () => renderModulesView(filterRows(ui.search.value)));
+if (ui.search) ui.search.addEventListener('input', () => renderModulesView(ui.search.value));
+if (ui.fltActive) ui.fltActive.addEventListener('change', () => renderModulesView(ui.search.value));
+if (ui.fltInactive) ui.fltInactive.addEventListener('change', () => renderModulesView(ui.search.value));
 if (ui.btnRefresh) ui.btnRefresh.addEventListener('click', () => refreshList());
 
 // ========= Init =========
 (async function init(){
-  console.log("[Admin] init() grouped modules + FITB");
+  console.log("[Admin] init() grouped modules + FITB + Unassign");
   try {
     updateTypeVisibility();
     if (ui.options && ui.options.children.length === 0) { setOptions(["",""]); }

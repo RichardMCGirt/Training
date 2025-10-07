@@ -54,8 +54,33 @@
       </div>
     </div>
   </div>
+<!-- near the bottom of dashboard.html, before your inline script or after it -->
+<script src="./modules.js"></script>
+<script>
+  // After your module cards are rendered into #list:
+  function makeModuleCardsNavigable(){
+    const list = document.getElementById('list');
+    list?.querySelectorAll('[data-module]').forEach(card=>{
+      card.style.cursor = 'pointer';
+      card.addEventListener('click', ()=>{
+        const m = card.getAttribute('data-module') || card.querySelector('[data-name]')?.textContent || '';
+        if (m) {
+          localStorage.setItem('selectedModule', m);
+          location.href = 'index.html?module=' + encodeURIComponent(m);
+        }
+      });
+    });
+  }
 
-  <script>
+  // If you have a render function, call makeModuleCardsNavigable() at the end.
+  // If not, run it after Refresh / initial load once #list is filled:
+  document.getElementById('btnRefresh')?.addEventListener('click', ()=>{
+    // call your existing refresh, then:
+    setTimeout(makeModuleCardsNavigable, 250);
+  });
+  // one best-effort initial call:
+  setTimeout(makeModuleCardsNavigable, 500);
+
     // Airtable config (Questions + Answers table + Titles table for Assigned Modules)
     const AIR = {
       API_KEY: "patTGK9HVgF4n1zqK.cbc0a103ecf709818f4cd9a37e18ff5f68c7c17f893085497663b12f2c600054",

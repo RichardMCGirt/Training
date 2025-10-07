@@ -1,12 +1,3 @@
-/* ==========================================================================
- * Slides + Airtable Quiz (slideshow + questions)
- * Questions Table: tblpvVpIJnkWco25E (Active=1, Order asc)
- * Answers  Table: tblkz5HyZGpgO093S (UPSERT by UserEmail + QuestionId)
- * ---------------
- * Supports MC and FITB, Wrong Attempts counting, and "retake" mode.
- * ========================================================================== */
-
-/* ------------------ Airtable (read-only for questions) --------------------- */
 const AIRTABLE_Q = {
   API_KEY: "patTGK9HVgF4n1zqK.cbc0a103ecf709818f4cd9a37e18ff5f68c7c17f893085497663b12f2c600054",
   BASE_ID: "app3rkuurlsNa7ZdQ",
@@ -80,11 +71,11 @@ function isFitbCorrect(userInput, answers, { useRegex=false, caseSensitive=false
 /* ------------------ State -------------------------------------------------- */
 const state = {
   presentationId: "",
-  slides: [],            // [{objectId, title}, ...]
+  slides: [],            
   i: 0,
-  answers: {},           // { questionId: {answer,isCorrect} }
-  quizByIndex: {},       // 0-based index → quiz
-  quizBySlideId: {},     // slide.objectId → quiz
+  answers: {},           
+  quizByIndex: {},       
+  quizBySlideId: {},     
 };
 // Retake mode: when index.html is opened with ?reset=1 we don't prefill prior answers or prior progress
 const params = new URLSearchParams(location.search);

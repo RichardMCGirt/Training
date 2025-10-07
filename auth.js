@@ -1,9 +1,3 @@
-
-/* ==========================================================================
- * auth.js – simple login/signup via Airtable
- * Table: tblppx6qNXXNJL7ON with fields: Email (single line text), Password (single line text)
- * WARNING: This is plaintext auth for demo purposes only. Don't use in production.
- * ========================================================================== */
 const AIRTABLE_AUTH = {
   API_KEY: "patTGK9HVgF4n1zqK.cbc0a103ecf709818f4cd9a37e18ff5f68c7c17f893085497663b12f2c600054",
   BASE_ID: "app3rkuurlsNa7ZdQ",
