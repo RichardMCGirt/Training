@@ -142,24 +142,48 @@ const state = {
 };
 
 // ========= Options editor =========
-function addOption(value=""){
+function addOption(value = "") {
+  // Prefer a local esc fallback in case esc() isn't defined globally
+  const _esc = (s) => String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
   const row = document.createElement("div");
   row.className = "opt inline";
+  // NOTE: handle first for visibility; include hidden .opt-order for renumbering.
   row.innerHTML = `
-    <input type="text" class="optText grow" placeholder="" value="${esc(value)}">
-    <label class="hint inline"><input type="radio" name="correctRadio" class="optCorrect"> Correct</label>
-    <button class="btn btn-ghost up" title="Move up">↑</button>
-    <button class="btn btn-danger del" title="Remove">×</button>
+    <span class="handle" title="Drag to reorder" aria-hidden="true">⋮⋮</span>
+    <input type="text" class="optText grow" placeholder="" value="${(typeof esc==='function'?esc:_esc)(value)}" />
+    <label class="hint inline">
+      <input type="radio" name="correctRadio" class="optCorrect" />
+      Correct
+    </label>
+    <button class="btn btn-danger del" title="Remove" type="button">×</button>
+    <input type="hidden" class="opt-order" value="0" />
   `;
-  row.querySelector(".up").addEventListener("click", () => {
-    const parent = ui.options;
-    const idx = Array.from(parent.children).indexOf(row);
-    if (idx > 0) parent.insertBefore(row, parent.children[idx-1]);
+
+ 
+
+  // Delete (and keep indices in sync)
+  row.querySelector(".del").addEventListener("click", () => {
+    row.remove();
+    if (window.OptionDrag && typeof window.OptionDrag.renumber === "function") {
+      window.OptionDrag.renumber();
+    }
   });
-  row.querySelector(".del").addEventListener("click", () => row.remove());
+
+  // Append and return
   ui.options.appendChild(row);
+
+  // If you’re using the auto-inject handle helper, this is optional (we already added a handle)
+  if (window.ensureOptionHandle) window.ensureOptionHandle(row);
+
   return row;
 }
+
 function getOptions(){
   return $$(".opt").map(row => {
     const text = row.querySelector(".optText").value.trim();
