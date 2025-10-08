@@ -1,165 +1,259 @@
-const AIRTABLE_Q = {
-  API_KEY: "patTGK9HVgF4n1zqK.cbc0a103ecf709818f4cd9a37e18ff5f68c7c17f893085497663b12f2c600054",
-  BASE_ID: "app3rkuurlsNa7ZdQ",
-  TABLE_ID: "tblpvVpIJnkWco25E"
-};
+/* eslint-disable no-console */
+"use strict";
 
-/* ------------------ Airtable (write: answers log) -------------------------- */
-const AIRTABLE_ANS = {
-  API_KEY: AIRTABLE_Q.API_KEY,
-  BASE_ID: AIRTABLE_Q.BASE_ID,
-  TABLE_ID: "tblkz5HyZGpgO093S"
-};
+/* ========================================================================== */
+/* Elements + State                                                           */
+/* ========================================================================== */
 
-/* ------------------ DOM references ---------------------------------------- */
 const el = {
-  embedCard: document.getElementById("embedCard"),
-  slidesEmbed: document.getElementById("slidesEmbed"),
   presentationIdInput: document.getElementById("presentationId"),
-  presLabel: document.getElementById("presLabel"),
+  slidesEmbed: document.getElementById("slidesEmbed"),
+  embedCard: document.getElementById("embedCard"),
+  presLabel: document.getElementById("presLabel"), // optional
   quizBox: document.getElementById("quizBox"),
   btnSubmit: document.getElementById("btnSubmit"),
-  saveStatus: document.getElementById("saveStatus"),
   userEmail: document.getElementById("userEmail"),
   prevBtn: document.getElementById("prevBtn"),
   nextBtn: document.getElementById("nextBtn"),
   counter: document.getElementById("counter"),
   bar: document.getElementById("bar"),
   barInner: document.getElementById("barInner"),
-  btnRetry: document.getElementById("btnRetry"),
   retryRow: document.getElementById("retryRow"),
+  thumbStrip: document.getElementById("thumbStrip"),
+  saveStatus: document.getElementById("saveStatus")
 };
 
-/* ------------------ Utils -------------------------------------------------- */
-function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
-function esc(s) { return String(s || "").replace(/[&<>"']/g, m => ({"&":"&amp;","<":"&lt;","&gt;":">","\"":"&quot;","'":"&#39;"}[m])); }
-function att(s) { return esc(s).replace(/"/g, "&quot;"); }
-function pulse(msg, cls="warn"){
-  if (!el.saveStatus) return;
-  el.saveStatus.textContent = msg;
-  el.saveStatus.className = cls;
-  setTimeout(() => { el.saveStatus.textContent = ""; el.saveStatus.className = "muted"; }, 1800);
-}
-function setProgress(pct){
-  if (!el.barInner) return;
-  const n = Math.max(0, Math.min(100, pct|0));
-  el.barInner.style.width = n + "%";
+const state = {
+  module: "",
+  presentationId: "",
+  gasUrl: "",
+  slides: [],                // [{ objectId, title }]
+  i: 0,                      // current index
+  answers: {},               // { [questionId]: { answer, isCorrect, at } }
+  quizByIndex: {},           // filled from Airtable
+  quizBySlideId: {},         // filled from Airtable
+  retake: new URLSearchParams(location.search).get("reset") === "1"
+};
+
+/* ========================================================================== */
+/* Small utils                                                                */
+/* ========================================================================== */
+
+function esc(s){ return String(s ?? "").replace(/[&<>"']/g, m => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[m])); }
+function att(s){ return String(s ?? "").replace(/"/g, "&quot;"); }
+function pulse(msg, kind="ok"){
+  try{
+    if (!el.saveStatus) return;
+    el.saveStatus.textContent = msg || "";
+    el.saveStatus.className = (kind === "ok" ? "muted" : (kind === "warn" ? "muted warn" : "muted bad"));
+    setTimeout(() => { if (el.saveStatus && el.saveStatus.textContent === msg) el.saveStatus.textContent = ""; }, 2000);
+  } catch {}
 }
 
-/* ------------------ FITB correctness -------------------------------------- */
-function isFitbCorrect(userInput, answers, { useRegex=false, caseSensitive=false } = {}){
-  if (!Array.isArray(answers)) return false;
-  const rawUser = String(userInput ?? "");
-  const input = caseSensitive ? rawUser.trim() : rawUser.trim().toLowerCase();
+/* ========================================================================== */
+/* Airtable config + helpers                                                  */
+/* ========================================================================== */
 
-  for (const a of answers) {
-    const ans = String(a ?? "");
-    if (useRegex) {
-      try {
-        const flags = caseSensitive ? "" : "i";
-        const re = new RegExp(ans, flags);
-        if (re.test(rawUser)) return true;
-      } catch { /* ignore bad pattern */ }
-    } else {
-      const cmp = caseSensitive ? ans.trim() : ans.trim().toLowerCase();
-      if (input === cmp) return true;
+const AIR = {
+  API_KEY: "patTGK9HVgF4n1zqK.cbc0a103ecf709818f4cd9a37e18ff5f68c7c17f893085497663b12f2c600054",
+  BASE_ID: "app3rkuurlsNa7ZdQ",
+
+  // Questions table (Active questions, filtered by Module)
+  QUESTIONS_TABLE_ID: "tblbf2TwwlycoVvQq",
+
+  // Answers table (if you log submissions here; same table ok)
+  ANSWERS_TABLE_ID: "tblpvVpIJnkWco25E",
+
+  // NEW: Module → { PresentationId, GasUrl } mapping table
+  // fields: Module (text), PresentationId (text), GasUrl (text)
+  MODULES_TABLE_ID: "tblpvVpIJnkWco25E"
+};
+
+function _headers(){
+  return { "Authorization": `Bearer ${AIR.API_KEY}`, "Content-Type": "application/json" };
+}
+const baseUrl = (t) => `https://api.airtable.com/v0/${AIR.BASE_ID}/${encodeURIComponent(t)}`;
+
+/* ========================================================================== */
+/* BOOTSTRAP                                                                  */
+/* ========================================================================== */
+
+document.addEventListener("DOMContentLoaded", boot);
+
+async function boot(){
+  // Resolve module
+  const params = new URLSearchParams(location.search);
+  const modFromUrl = (params.get("module") || "").trim();
+  const modFromLS  = (localStorage.getItem("selectedModule") || "").trim();
+  state.module = modFromUrl || modFromLS;
+
+  // Guard: if no module, go back to dashboard
+  if (!state.module) {
+    location.replace("dashboard.html");
+    return;
+  }
+  localStorage.setItem("selectedModule", state.module);
+
+  // Resolve presentation from URL first
+  const pidFromUrl = (params.get("presentationId") || "").trim();
+  state.presentationId = pidFromUrl;
+
+  // Prepare UI area
+  if (el.quizBox) el.quizBox.innerHTML = `<div class="muted">Loading deck for <strong>${esc(state.module)}</strong>…</div>`;
+
+  // If no presentationId provided, look it up from MODULES table by Module
+  if (!state.presentationId) {
+    try {
+      const cfg = await fetchModuleConfigFromAirtable(state.module);
+      state.presentationId = (cfg.presentationId || "").trim();
+      state.gasUrl = (cfg.gasUrl || "").trim();
+    } catch (e) {
+      console.warn("[index] module config lookup failed", e);
+    }
+  } else {
+    // We still might want the GasUrl even if PID came from URL
+    try {
+      const cfg = await fetchModuleConfigFromAirtable(state.module);
+      state.gasUrl = (cfg.gasUrl || "").trim();
+    } catch {}
+  }
+
+  // Expose GAS endpoint for thumbnail + slide metadata fetches
+  if (state.gasUrl) {
+    try { window.GAS_ENDPOINT = state.gasUrl; } catch {}
+  }
+
+  // If still no PID, show friendly message
+  if (!state.presentationId) {
+    if (el.quizBox) {
+      el.quizBox.innerHTML = `
+        <div class="muted">No deck is configured for <strong>${esc(state.module)}</strong>.</div>
+        <div class="row" style="margin-top:10px">
+          <button class="btn" onclick="location.href='dashboard.html'">Back to Dashboard</button>
+        </div>
+      `;
+    }
+    return;
+  }
+
+  // Set input and auto-load deck
+  if (el.presentationIdInput) el.presentationIdInput.value = state.presentationId;
+  try {
+    await onLoadDeckClick(state.presentationId);
+  } catch (e) {
+    console.error("[index] onLoadDeckClick failed", e);
+    if (el.quizBox) {
+      el.quizBox.innerHTML = `
+        <div class="muted">Could not load the deck for <strong>${esc(state.module)}</strong>.</div>
+        <div class="row" style="margin-top:10px">
+          <button class="btn" onclick="location.href='dashboard.html'">Back to Dashboard</button>
+        </div>
+      `;
     }
   }
-  return false;
 }
 
-/* ------------------ State -------------------------------------------------- */
-const state = {
-  presentationId: "",
-  slides: [],            
-  i: 0,
-  answers: {},           
-  quizByIndex: {},       
-  quizBySlideId: {},     
-};
-// Retake mode: when index.html is opened with ?reset=1 we don't prefill prior answers or prior progress
-const params = new URLSearchParams(location.search);
-state.retake = (params.get('reset') === '1'); // true = do NOT show prior selections/inputs or resume progress
+/* ========================================================================== */
+/* Airtable lookups                                                           */
+/* ========================================================================== */
 
-/* ------------------ Airtable helpers -------------------------------------- */
-function qHeaders(){ return { "Authorization": `Bearer ${AIRTABLE_Q.API_KEY}`, "Content-Type": "application/json" }; }
-const qBaseUrl = () => `https://api.airtable.com/v0/${AIRTABLE_Q.BASE_ID}/${encodeURIComponent(AIRTABLE_Q.TABLE_ID)}`;
-
-function aHeaders(){ return { "Authorization": `Bearer ${AIRTABLE_ANS.API_KEY}`, "Content-Type": "application/json" }; }
-const aBaseUrl = () => `https://api.airtable.com/v0/${AIRTABLE_ANS.BASE_ID}/${encodeURIComponent(AIRTABLE_ANS.TABLE_ID)}`;
-
-/* Find existing answer record by (UserEmail & QuestionId) */
-async function findAnswerRecord(userEmail, questionId){
-  const url = new URL(aBaseUrl());
-  const e = s => String(s||"").replace(/'/g, "\\'");
-  url.searchParams.set("filterByFormula", `AND({UserEmail}='${e(userEmail)}',{QuestionId}='${e(questionId)}')`);
+async function fetchModuleConfigFromAirtable(moduleName){
+  // Query MODULES_TABLE_ID for a record where LOWER(TRIM({Module})) == moduleName.toLowerCase()
+  const url = new URL(baseUrl(AIR.MODULES_TABLE_ID));
+  const esc = (s) => String(s||"").replace(/'/g, "\\'");
   url.searchParams.set("pageSize", "1");
-  const res = await fetch(url.toString(), { headers: aHeaders() });
-  if (!res.ok) throw new Error(`Find failed: HTTP ${res.status}`);
+  url.searchParams.set("filterByFormula", `LOWER(TRIM({Module}))='${esc(moduleName.toLowerCase())}'`);
+
+  const res = await fetch(url.toString(), { headers: _headers() });
+  if (!res.ok) {
+    const body = await res.text().catch(()=>"(no body)");
+    throw new Error(`Module config fetch failed: ${res.status} ${body}`);
+  }
   const data = await res.json();
-  return (data.records && data.records[0]) ? data.records[0] : null;
+  const rec = (data.records || [])[0];
+  if (!rec) return { presentationId: "", gasUrl: "" };
+
+  const f = rec.fields || {};
+  return {
+    presentationId: String(f.PresentationId || "").trim(),
+    gasUrl: String(f.GasUrl || "").trim()
+  };
 }
 
-/* Upsert + Wrong Attempts (overwrite count with +1 on wrong) */
-const FIELD_WRONG_ATTEMPTS = "Wrong Attempts";
-const FIELD_LAST_WRONG_AT  = "Last Wrong At";
+/* ========================================================================== */
+/* Slides: thumbnails + embed                                                 */
+/* ========================================================================== */
 
-async function upsertAnswerRecordWithWrongCount(baseFields) {
-  if (!baseFields?.UserEmail || !baseFields?.QuestionId)
-    throw new Error("Missing required fields: UserEmail and QuestionId");
-
-  const existing = await findAnswerRecord(baseFields.UserEmail, baseFields.QuestionId);
-
-  const isWrong = baseFields.IsCorrect === false;
-  const prevWrong = existing?.fields?.[FIELD_WRONG_ATTEMPTS] || 0;
-  const nextWrong = isWrong ? prevWrong + 1 : prevWrong;
-
-  const fieldsToSave = {
-    ...baseFields,
-    [FIELD_WRONG_ATTEMPTS]: nextWrong,
-  };
-  if (isWrong && FIELD_LAST_WRONG_AT)
-    fieldsToSave[FIELD_LAST_WRONG_AT] = new Date().toISOString();
-
-  if (existing) {
-    const res = await fetch(aBaseUrl(), {
-      method: "PATCH",
-      headers: aHeaders(),
-      body: JSON.stringify({
-        records: [{ id: existing.id, fields: fieldsToSave }],
-        typecast: true,
-      }),
-    });
-    if (!res.ok) throw new Error(`Update failed: HTTP ${res.status}`);
-    return res.json();
-  } else {
-    const res = await fetch(aBaseUrl(), {
-      method: "POST",
-      headers: aHeaders(),
-      body: JSON.stringify({
-        records: [{ fields: fieldsToSave }],
-        typecast: true,
-      }),
-    });
-    if (!res.ok) throw new Error(`Create failed: HTTP ${res.status}`);
-    return res.json();
+async function tryFetchSlidesFromGAS(presentationId){
+  try {
+    const base = (window.GAS_ENDPOINT || "").trim();
+    if (!base) return [];
+    const url = new URL(base);
+    if (!url.searchParams.has("fn")) url.searchParams.set("fn", "slides");
+    url.searchParams.set("id", presentationId);
+    const res = await fetch(url.toString(), { credentials: "omit" });
+    if (!res.ok) return [];
+    const json = await res.json().catch(()=>null);
+    const arr = Array.isArray(json?.slides) ? json.slides : (Array.isArray(json) ? json : []);
+    return arr
+      .map(s => ({ objectId: String(s.objectId||"").trim(), title: String(s.title||"").trim() }))
+      .filter(s => s.objectId);
+  } catch {
+    return [];
   }
 }
 
-/* ------------------ Fetch Questions from Airtable ------------------------- */
-async function fetchQuestionsFromAirtable() {
+function slideThumbUrl(presId, pageObjectId){
+  const id = encodeURIComponent(presId);
+  const pid = encodeURIComponent(pageObjectId);
+  return `https://docs.google.com/presentation/d/${id}/export/png?id=${id}&pageid=${pid}`;
+}
+
+function embedUrl(presId, pageObjectId){
+  const base = `https://docs.google.com/presentation/d/${encodeURIComponent(presId)}/embed?start=false&loop=false&delayms=3000`;
+  return pageObjectId ? `${base}#slide=id.${encodeURIComponent(pageObjectId)}` : base;
+}
+
+function showEmbed(presId, optionalPageId){
+  if (!el.slidesEmbed || !el.embedCard) return;
+  const id = (presId || "").trim();
+  if (!id) return;
+  const url = embedUrl(id, optionalPageId);
+  el.slidesEmbed.setAttribute("src", url);
+  el.embedCard.style.display = "block";
+  if (el.presLabel) el.presLabel.textContent = id;
+}
+
+/* ========================================================================== */
+/* Questions: fetch + map                                                     */
+/* ========================================================================== */
+
+const qBaseUrl = () => baseUrl(AIR.QUESTIONS_TABLE_ID);
+const aBaseUrl = () => baseUrl(AIR.ANSWERS_TABLE_ID);
+
+function qHeaders(){ return _headers(); }
+function aHeaders(){ return _headers(); }
+
+async function fetchQuestionsFromAirtable(){
+  const selectedModule = state.module;
+
   const url = new URL(qBaseUrl());
   url.searchParams.set("pageSize", "100");
   url.searchParams.set("sort[0][field]", "Order");
   url.searchParams.set("sort[0][direction]", "asc");
-  url.searchParams.set("filterByFormula", "AND({Active}=1)");
+  if (selectedModule) {
+    const esc = s => String(s).replace(/'/g, "\\'");
+    url.searchParams.set("filterByFormula", `AND({Active}=1, LOWER(TRIM({Module}))='${esc(selectedModule.toLowerCase())}')`);
+  } else {
+    url.searchParams.set("filterByFormula", "AND({Active}=1)");
+  }
 
   let all = [];
   let offset;
   do {
     if (offset) url.searchParams.set("offset", offset);
     const res = await fetch(url.toString(), { headers: qHeaders() });
-    if (!res.ok) throw new Error(`Airtable fetch failed: ${res.status}`);
+    if (!res.ok) throw new Error(`Questions fetch failed: ${res.status}`);
     const data = await res.json();
     all = all.concat(data.records || []);
     offset = data.offset;
@@ -169,7 +263,12 @@ async function fetchQuestionsFromAirtable() {
       u.searchParams.set("pageSize", "100");
       u.searchParams.set("sort[0][field]", "Order");
       u.searchParams.set("sort[0][direction]", "asc");
-      u.searchParams.set("filterByFormula", "AND({Active}=1)");
+      if (selectedModule) {
+        const esc2 = s => String(s).replace(/'/g, "\\'");
+        u.searchParams.set("filterByFormula", `AND({Active}=1, LOWER(TRIM({Module}))='${esc2(selectedModule.toLowerCase())}')`);
+      } else {
+        u.searchParams.set("filterByFormula", "AND({Active}=1)");
+      }
       url.search = u.search;
     }
   } while (offset);
@@ -181,12 +280,12 @@ async function fetchQuestionsFromAirtable() {
     const f = rec.fields || {};
     const order = Number(f["Order"] ?? NaN);
 
-    // Parse MC fields
+    // Parse MC options
     const optsRaw = (f["Options (JSON)"] || "[]");
     let options = [];
     try { options = Array.isArray(optsRaw) ? optsRaw : JSON.parse(optsRaw); } catch {}
 
-    // Parse FITB fields
+    // Parse FITB answers
     const fitbRaw = (f["FITB Answers (JSON)"] || "[]");
     let fitbAnswers = [];
     try { fitbAnswers = Array.isArray(fitbRaw) ? fitbRaw : JSON.parse(fitbRaw); } catch {}
@@ -220,18 +319,81 @@ async function fetchQuestionsFromAirtable() {
   state.quizBySlideId = quizBySlideId;
 }
 
-/* ------------------ Slideshow (embed) ------------------------------------- */
-function showEmbed(presId){
-  if (!el.slidesEmbed || !el.embedCard) return;
-  const id = (presId || "").trim();
-  if (!id) return;
-  const url = `https://docs.google.com/presentation/d/${encodeURIComponent(id)}/embed?start=false&loop=false&delayms=3000`;
-  el.slidesEmbed.setAttribute("src", url);
-  el.embedCard.style.display = "block";
-  if (el.presLabel) el.presLabel.textContent = id;
+/* ========================================================================== */
+/* Thumbnails                                                                 */
+/* ========================================================================== */
+
+function renderThumbs(){
+  if (!el.thumbStrip) return;
+  const presId = state.presentationId;
+  const slides = state.slides || [];
+
+  if (!slides.length || !presId) {
+    el.thumbStrip.innerHTML = "";
+    return;
+  }
+
+  el.thumbStrip.innerHTML = slides.map((s, idx) => {
+    const src = slideThumbUrl(presId, s.objectId);
+    const title = s.title || `Slide ${idx+1}`;
+    const isActive = idx === state.i ? " active" : "";
+    return `
+      <div class="thumb${isActive}" data-idx="${idx}" title="${esc(title)}">
+        <img loading="lazy" src="${att(src)}" alt="${esc(title)}"/>
+        <div class="cap">${esc(title)}</div>
+      </div>
+    `;
+  }).join("");
+
+  el.thumbStrip.querySelectorAll(".thumb").forEach(node => {
+    node.addEventListener("click", () => {
+      const idx = Number(node.getAttribute("data-idx") || "0");
+      if (!Number.isFinite(idx)) return;
+      state.i = Math.max(0, Math.min(idx, state.slides.length - 1));
+      const pageId = state.slides[state.i]?.objectId || "";
+      showEmbed(state.presentationId, pageId);
+      render();
+    });
+  });
 }
 
-/* ------------------ Quiz rendering ---------------------------------------- */
+/* ========================================================================== */
+/* Navigation + Render                                                        */
+/* ========================================================================== */
+
+function go(delta){
+  const n = state.slides.length;
+  if (!n) return;
+  const next = Math.max(0, Math.min(state.i + delta, n - 1));
+  if (next === state.i) return;
+  state.i = next;
+  const pageId = state.slides[state.i]?.objectId || "";
+  showEmbed(state.presentationId, pageId);
+  render();
+}
+if (el.prevBtn) el.prevBtn.addEventListener("click", () => go(-1));
+if (el.nextBtn) el.nextBtn.addEventListener("click", () => go(+1));
+
+function render(){
+  const total = Math.max(Object.keys(state.quizByIndex).length || 0, state.slides.length);
+  const at = Math.min(state.i + 1, Math.max(total, 1));
+  if (el.counter) el.counter.textContent = `${at} / ${total}`;
+  if (el.barInner) {
+    const pct = total ? Math.round((at*100)/total) : 0;
+    el.barInner.style.width = pct + "%";
+  }
+
+  renderQuiz(currentQuizForIndex(state.i));
+
+  if (el.prevBtn) el.prevBtn.disabled = state.i <= 0;
+  if (el.nextBtn) el.nextBtn.disabled = state.i >= (state.slides.length - 1);
+
+  renderThumbs();
+  saveLocalProgress();
+}
+
+/* ------------------ Quiz selection ---------------------------------------- */
+
 function currentQuizForIndex(i){
   const slide = state.slides[i];
   if (!slide) return null;
@@ -239,6 +401,8 @@ function currentQuizForIndex(i){
   if (byId) return byId;
   return state.quizByIndex[i] || null;
 }
+
+/* ------------------ Render quiz ------------------------------------------- */
 
 function renderQuiz(quiz) {
   if (!el.quizBox) return;
@@ -249,7 +413,6 @@ function renderQuiz(quiz) {
     return;
   }
 
-  // Use prior answer only when NOT in retake mode
   const priorAns = state.retake ? "" : (state.answers[quiz.questionId]?.answer || "");
 
   if (quiz.type === "MC") {
@@ -276,90 +439,49 @@ function renderQuiz(quiz) {
   const valueAttr = state.retake ? "" : att(priorAns);
   el.quizBox.innerHTML = `
     <div><strong>${esc(quiz.question)}</strong> ${quiz.required ? `<span class="pill">Required</span>` : ""}</div>
-    <div style="margin-top:10px">
-      <input id="fitbInput" type="text" placeholder="Type your answer..." value="${valueAttr}" style="width:100%;padding:10px;border:1px solid #e5e7eb;border-radius:8px;background:#fafafa" />
-      <div class="muted" style="font-size:12px;margin-top:6px">
-        ${quiz.fitbUseRegex ? "Regex enabled." : "Exact match"} ${quiz.fitbCaseSensitive ? "(case sensitive)" : "(case insensitive)"}.
-      </div>
+    <div class="row" style="margin-top:8px">
+      <input id="fitb" placeholder="Type your answer" value="${valueAttr}" autocomplete="off"/>
     </div>
   `;
   if (el.btnSubmit) el.btnSubmit.disabled = false;
   if (el.saveStatus) el.saveStatus.textContent = "";
 }
 
-/* ------------------ Render + navigation ----------------------------------- */
-function render(){
-  renderQuiz(currentQuizForIndex(state.i));
-  if (el.counter) el.counter.textContent = `${state.i+1} / ${state.slides.length}`;
-  if (el.prevBtn) el.prevBtn.disabled = state.i <= 0;
-  if (el.nextBtn) el.nextBtn.disabled = state.i >= state.slides.length - 1;
-  const pct = state.slides.length ? Math.round(((state.i+1) / state.slides.length) * 100) : 0;
-  setProgress(pct);
-}
-
-function getUserAnswer(quiz) {
+function getUserAnswer(quiz){
   if (!quiz) return "";
   if (quiz.type === "MC") {
-    const x = document.querySelector('input[name="opt"]:checked');
-    return x ? x.value : "";
-  } else {
-    const inp = document.getElementById("fitbInput");
-    return inp ? inp.value : "";
+    const picked = document.querySelector('input[name="opt"]:checked');
+    return picked ? picked.value : "";
   }
+  const input = document.getElementById("fitb");
+  return input ? input.value.trim() : "";
 }
 
-function isAllAnswered(){
-  const total = getQuestionCount();
-  let count = 0;
-  for (let i = 0; i < total; i++){
-    const q = currentQuizForIndex(i);
-    if (q && state.answers[q.questionId]) count++;
-  }
-  return total > 0 && count >= total;
-}
-
-async function go(delta) {
-  const quiz = currentQuizForIndex(state.i);
-  if (quiz && quiz.required) {
-    const cur = getUserAnswer(quiz).trim();
-    const has = !!(state.answers[quiz.questionId]?.answer);
-    if (!cur && !has) return pulse("Answer required before continuing.", "warn");
-  }
-
-  // In retake mode: do NOT consult/merge prior answers; just move linearly.
-  if (state.retake) {
-    state.i = clamp(state.i + delta, 0, state.slides.length - 1);
-    render();
-    return;
-  }
-
-  // Normal mode (resume-aware)
-  state.i = clamp(state.i + delta, 0, state.slides.length - 1);
-
+function isFitbCorrect(ans, answers, { useRegex=false, caseSensitive=false }={}){
+  const hay = caseSensitive ? ans : ans.toLowerCase();
+  const pool = (answers||[]).map(a=> caseSensitive ? String(a||"") : String(a||"").toLowerCase());
+  if (!useRegex) return pool.includes(hay);
   try {
-    const prior = await loadExistingAnswersForUser(
-      state.presentationId,
-      (el.userEmail?.value || localStorage.getItem('trainingEmail') || '').trim()
-    );
-    state.answers = Object.assign({}, prior);
-
-    // If we land on an already-answered slide, jump forward to next unanswered
-    const q = currentQuizForIndex(state.i);
-    if (q && state.answers[q.questionId]) {
-      const next = nextUnansweredIndex();
-      if (next > state.i) state.i = next;
-    }
-  } catch (e) {
-    console.warn('Resume load failed', e);
-  }
-
-  render();
+    return pool.some(p => {
+      const m = p.match(/^\/(.*)\/([gimsuy]*)$/);
+      const rx = m ? new RegExp(m[1], m[2]) : new RegExp(p);
+      return rx.test(ans);
+    });
+  } catch { return false; }
 }
 
-if (el.prevBtn) el.prevBtn.addEventListener("click", () => { go(-1); });
-if (el.nextBtn) el.nextBtn.addEventListener("click", () => { go(+1); });
+/* ------------------ Save answers ------------------------------------------ */
 
-/* ---------- Resume logic (skipped in retake mode) -------------------------- */
+async function upsertAnswerRecordWithWrongCount(baseFields){
+  // simple append (create); adjust to your schema as needed
+  const res = await fetch(aBaseUrl(), {
+    method: "POST",
+    headers: aHeaders(),
+    body: JSON.stringify({ records: [{ fields: baseFields }], typecast: true })
+  });
+  if (!res.ok) throw new Error(`Save failed: ${res.status} ${await res.text().catch(()=>"(no body)")}`);
+}
+
 async function loadExistingAnswersForUser(presentationId, userEmail){
   if (!userEmail) return {};
   const url = new URL(aBaseUrl());
@@ -402,7 +524,7 @@ function nextUnansweredIndex(){
     const has = !!(state.answers[q.questionId]);
     if (!has) return i;
   }
-  return 0; // all answered: start at beginning
+  return 0;
 }
 
 function getQuestionCount(){
@@ -421,14 +543,21 @@ function ensureSlidesForQuestions(){
 }
 
 /* ------------------ Deck load integration --------------------------------- */
+
 async function onDeckLoaded(presentationId, slidesArray){
   state.presentationId = presentationId;
-  state.slides = (Array.isArray(slidesArray) && slidesArray.length)
-    ? slidesArray
-    : [{ objectId: presentationId, title: "Slides Embed" }];
+
+  // Prefer provided slides; else try GAS; else 1 placeholder
+  let slides = (Array.isArray(slidesArray) && slidesArray.length) ? slidesArray : [];
+  if (!slides.length) {
+    const fromGAS = await tryFetchSlidesFromGAS(presentationId);
+    if (fromGAS.length) slides = fromGAS;
+  }
+  state.slides = slides.length ? slides : [{ objectId: presentationId, title: "Slides Embed" }];
   state.i = 0;
 
-  showEmbed(presentationId);
+  const firstPage = state.slides[0]?.objectId || "";
+  showEmbed(presentationId, firstPage);
 
   try {
     await fetchQuestionsFromAirtable();
@@ -442,7 +571,6 @@ async function onDeckLoaded(presentationId, slidesArray){
   if (el.prevBtn) el.prevBtn.disabled = state.i <= 0;
   if (el.nextBtn) el.nextBtn.disabled = state.slides.length <= 1;
 
-  // RETAKE MODE: do NOT load/merge prior answers; start fresh at Q1
   if (state.retake) {
     state.answers = {};
   } else {
@@ -452,11 +580,12 @@ async function onDeckLoaded(presentationId, slidesArray){
         (el.userEmail?.value||localStorage.getItem('trainingEmail')||'').trim()
       );
       state.answers = Object.assign({}, prior);
-      state.i = nextUnansweredIndex(); // only in normal mode
+      state.i = nextUnansweredIndex();
+      const pageId = state.slides[state.i]?.objectId || "";
+      showEmbed(state.presentationId, pageId);
     } catch(e){ console.warn('Resume load failed', e); }
   }
 
-  // Wire Retry button
   if (el.btnRetry) {
     el.btnRetry.onclick = () => {
       const pid = state.presentationId || (el.presentationIdInput?.value || "");
@@ -464,7 +593,6 @@ async function onDeckLoaded(presentationId, slidesArray){
       const url = new URL(location.href);
       url.searchParams.set("presentationId", pid);
       url.searchParams.set("reset", "1");
-      // keep same email in localStorage; just navigate
       location.href = url.toString();
     };
   }
@@ -478,7 +606,7 @@ document.addEventListener("deck:loaded", (ev) => {
   onDeckLoaded(id, slides);
 });
 
-/* ------------------ Legacy entry point used by index.html / auto-load ------ */
+/* Legacy entry point used by index.html / auto-load */
 window.onLoadDeckClick = async function(evOrId){
   try{
     const maybeId = typeof evOrId === "string" ? evOrId : "";
@@ -494,13 +622,14 @@ window.onLoadDeckClick = async function(evOrId){
   }
 };
 
-/* Keyboard navigation convenience */
+/* Keyboard navigation */
 window.addEventListener("keydown", (e) => {
   if (e.key === "ArrowLeft") { try { go(-1); } catch{} }
   if (e.key === "ArrowRight") { try { go(+1); } catch{} }
 });
 
 /* ------------------ Submit + save ----------------------------------------- */
+
 async function submitAnswer(){
   const quiz = currentQuizForIndex(state.i);
   if (!quiz) return;
@@ -511,7 +640,6 @@ async function submitAnswer(){
   const ans = getUserAnswer(quiz);
   if (!ans && quiz.required) return pulse("Answer required.", "warn");
 
-  // Correctness
   let isCorrect = true;
   if (quiz.type === "MC") {
     isCorrect = ans === quiz.correct;
@@ -519,7 +647,6 @@ async function submitAnswer(){
     isCorrect = isFitbCorrect(ans, quiz.fitbAnswers, { useRegex: quiz.fitbUseRegex, caseSensitive: quiz.fitbCaseSensitive });
   }
 
-  // Save to local resume map (normal mode), but do NOT overwrite a prior correct answer
   if (!state.retake) {
     const prev = state.answers[quiz.questionId];
     if (!(prev && prev.isCorrect === true)) {
@@ -527,7 +654,6 @@ async function submitAnswer(){
     }
   }
 
-  // Persist to Airtable (answers log with Wrong Attempts)
   const baseFields = {
     UserEmail: userEmail,
     PresentationId: state.presentationId,
@@ -543,20 +669,19 @@ async function submitAnswer(){
     pulse("Save failed", "bad");
   }
 
-  // Always continue to next slide after submit (even if wrong)
   if (state.i < state.slides.length - 1) {
     state.i += 1;
+    const pageId = state.slides[state.i]?.objectId || "";
+    showEmbed(state.presentationId, pageId);
     render();
   } else {
-    // End of deck — show retry UI
     if (el.retryRow) el.retryRow.style.display = "flex";
   }
 }
-
 if (el.btnSubmit) el.btnSubmit.addEventListener("click", submitAnswer);
 
-
 /* ------------------ Local progress ---------------------------------------- */
+
 function saveLocalProgress(){
   const email = (el.userEmail?.value || "").trim();
   if (!email || !state.presentationId) return;

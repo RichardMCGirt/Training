@@ -1,0 +1,18 @@
+ body{margin:0;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f7f7fb;color:#111827}
+    .wrap{max-width:1000px;margin:30px auto;padding:0 16px}
+    .bar{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+    .btn{height:36px;border:0;border-radius:8px;background:#111827;color:#fff;cursor:pointer;padding:6px 12px}
+    .muted{color:#6b7280}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+    .card{background:white;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 4px 16px rgba(0,0,0,.05);overflow:hidden}
+    .hd{padding:10px 12px;border-bottom:1px solid #e5e7eb;font-weight:600}
+    .bd{padding:12px}
+    input{height:36px;border:1px solid #e5e7eb;border-radius:8px;padding:6px 10px;width:100%}
+    .row{display:flex;gap:8px;align-items:center}
+    .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
+    .progress{height:8px;border-radius:999px;background:#e5e7eb;overflow:hidden}
+    .progress i{display:block;height:100%;width:0%;background:#2563eb}
+    .progress.correct i{background:#16a34a}
+    .pill{display:inline-block;padding:2px 8px;border:1px solid #e5e7eb;border-radius:999px;font-size:12px;color:#374151}
+    .stat{display:flex;justify-content:space-between;font-size:13px;margin-top:8px}
+    .stat b{font-weight:600}

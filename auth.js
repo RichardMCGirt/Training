@@ -6,7 +6,15 @@ const AIRTABLE_AUTH = {
 
 function authHeaders(){ return { "Authorization": `Bearer ${AIRTABLE_AUTH.API_KEY}`, "Content-Type": "application/json" }; }
 const authBaseUrl = () => `https://api.airtable.com/v0/${AIRTABLE_AUTH.BASE_ID}/${encodeURIComponent(AIRTABLE_AUTH.TABLE_ID)}`;
-
+function genAutoSlideId(moduleName, orderVal) {
+  const slug = String(moduleName || '').trim().toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 32);
+  const ord  = Number(orderVal) || 1;
+  const rand = Math.random().toString(36).slice(2, 8);
+  return `auto_${slug || 'mod'}_${ord}_${Date.now().toString(36)}_${rand}`;
+}
 async function authFindByEmail(email){
   const url = new URL(authBaseUrl());
   const e = String(email||"").replace(/'/g, "\\'");

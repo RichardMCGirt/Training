@@ -122,7 +122,6 @@ const norm = s => String(s||"").toLowerCase().trim();
       });
       if (!res.ok) {
         const body = await res.text().catch(()=>"(no body)");
-        throw new Error(`Update failed: ${res.status} – ${body}`);
       }
     }
     return { updated: matches.length };

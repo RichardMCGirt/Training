@@ -9,6 +9,25 @@ const AIRTABLE = {
   TITLES_MAPPING_FIELD: "Assigned Modules Mapping"
 };
 
+// ===== Airtable config (Questions table) =====
+const QUESTIONS_AT = {
+  API_KEY:        'patTGK9HVgF4n1zqK.cbc0a103ecf709818f4cd9a37e18ff5f68c7c17f893085497663b12f2c600054',         // e.g. 'patXXXX...'
+  BASE_ID:        'app3rkuurlsNa7ZdQ',              // e.g. 'appXXXX...'
+  TABLE_ID:       'tblbf2TwwlycoVvQq',   // e.g. 'tblXXXX...'
+};
+
+function qBaseUrl(){
+  return `https://api.airtable.com/v0/${encodeURIComponent(QUESTIONS_AT.BASE_ID)}/${encodeURIComponent(QUESTIONS_AT.TABLE_ID)}`;
+}
+
+function qHeaders(){
+  return {
+    'Authorization': `Bearer ${QUESTIONS_AT.API_KEY}`,
+    'Content-Type': 'application/json'
+  };
+}
+
+
 // ========= Tiny DOM Helpers =========
 const $  = sel => document.querySelector(sel);
 const $$ = sel => Array.from(document.querySelectorAll(sel));
@@ -1236,4 +1255,126 @@ if (ui.btnUnassign) ui.btnUnassign.addEventListener("click", unassignSelected);
       toast(e.message || "Init (modmap) failed", "bad");
     }
   })();
+})();
+// Create → POST a single question to Airtable
+async function createQuestion(fields){
+  const res = await fetch(qBaseUrl(), {
+    method: 'POST',
+    headers: qHeaders(),
+    body: JSON.stringify({ records: [{ fields }] })
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(()=>'(no body)');
+    throw new Error(`Create failed: HTTP ${res.status} – ${body}`);
+  }
+  const data = await res.json();
+  return data.records?.[0];
+}
+
+// Collect values from your existing DOM
+function readQuestionFormFromDOM(){
+  const statusEl   = document.getElementById('qStatus');
+
+  const typeSel    = document.getElementById('questionType');
+  const type       = (typeSel?.value || 'MC').toUpperCase();
+  const slideRaw   = (document.getElementById('slideId')?.value || '').trim(); // hidden (intentionally)
+  const orderVal   = Number(document.getElementById('order')?.value || 1);
+  const questionId = (document.getElementById('questionId')?.value || '').trim();
+  const question   = (document.getElementById('questionText')?.value || '').trim();
+
+  const moduleSel  = document.getElementById('moduleSelect');
+  const moduleNew  = document.getElementById('moduleInput');
+  const moduleName = (moduleSel?.value || moduleNew?.value || '').trim();
+
+  const active     = true;   // checkbox field → boolean
+  const required   = true;   // checkbox field → boolean
+
+  if (!moduleName) throw new Error('Module is required.');
+  if (!question)   throw new Error('Question text is required.');
+  if (!Number.isFinite(orderVal) || orderVal < 1) throw new Error('Order must be a positive integer.');
+
+  // If slideId is blank (hidden), create one automatically
+  const slideId = slideRaw || genAutoSlideId(moduleName, orderVal);
+
+  const fields = {
+    'Active': active,
+    'Required': required,
+    'Module': moduleName,
+    'Order': orderVal,
+    'Type': type,
+    'Question': question,
+    'Slide ID': slideId
+  };
+
+  if (questionId) fields['QuestionId'] = questionId;
+
+  if (type === 'MC') {
+    const optWrap = document.getElementById('options');
+    const rows = Array.from(optWrap?.children || []);
+    const options = rows
+      .map(row => row.querySelector('.optText')?.value?.trim())
+      .filter(v => v && v.length);
+
+    // Allow 2–6 options (or change to exactly 3 if you prefer)
+    if (options.length < 2 || options.length > 6) {
+      throw new Error('Provide 2–6 options for MC.');
+    }
+
+    const chosen = rows.find(r => r.querySelector('.optCorrect')?.checked);
+    if (!chosen) throw new Error('Select one option as Correct.');
+    const correct = (chosen.querySelector('.optText')?.value || '').trim();
+    if (!correct) throw new Error('Selected correct option has empty text.');
+    if (!options.includes(correct)) throw new Error('Correct must exactly match one of the options.');
+
+    fields['Options (JSON)'] = JSON.stringify(options);
+    fields['Correct']        = correct;
+  } else {
+    const fitbEl = document.getElementById('fitbAnswers');
+    let answers = [];
+
+    if (fitbEl) {
+      try {
+        const parsed = JSON.parse(fitbEl.value || '[]');
+        if (!Array.isArray(parsed) || parsed.length < 1 || parsed.length > 2) throw 0;
+        answers = parsed.map(s => String(s).trim()).filter(Boolean);
+      } catch {
+        throw new Error('Provide FITB Answers (JSON) as ["word","two words"] (1–2 items).');
+      }
+    } else {
+      const raw = window.prompt('Enter 1–2 FITB answers (comma-separated):', '');
+      const parts = (raw||'').split(',').map(s=>s.trim()).filter(Boolean);
+      if (parts.length < 1 || parts.length > 2) throw new Error('Need 1–2 FITB answers.');
+      answers = parts;
+    }
+
+    fields['FITB Answers (JSON)'] = JSON.stringify(answers);
+    fields['FITB Use Regex']      = false;
+    fields['FITB Case Sensitive'] = false;
+  }
+
+  statusEl && (statusEl.textContent = 'Ready to save');
+  return fields;
+}
+
+
+
+(function wireSaveQuestion(){
+  const btn   = document.getElementById('btnSaveQuestion');
+  const status= document.getElementById('qStatus');
+  if (!btn) return;
+
+  btn.addEventListener('click', async () => {
+    status && (status.textContent = 'Saving…');
+    try {
+      const fields = readQuestionFormFromDOM();
+      const rec = await createQuestion(fields);
+      status && (status.textContent = 'Saved ✔');
+      // Optionally refresh the list or reset the form
+      // refreshQuestionsList();
+      // form.reset();
+    } catch (e) {
+      console.error(e);
+      status && (status.textContent = e.message || 'Save failed');
+    }
+  });
 })();
