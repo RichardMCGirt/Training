@@ -62,7 +62,7 @@ const AIR = {
   QUESTIONS_TABLE_ID: "tblbf2TwwlycoVvQq",
 
   // Answers table (if you log submissions here; same table ok)
-  ANSWERS_TABLE_ID: "tblpvVpIJnkWco25E",
+  ANSWERS_TABLE_ID: "tblkz5HyZGpgO093S",
 
   // NEW: Module → { PresentationId, GasUrl } mapping table
   // fields: Module (text), PresentationId (text), GasUrl (text)
