@@ -2,7 +2,7 @@
 const AIRTABLE = {
   API_KEY: "patTGK9HVgF4n1zqK.cbc0a103ecf709818f4cd9a37e18ff5f68c7c17f893085497663b12f2c600054",
   BASE_ID: "app3rkuurlsNa7ZdQ",
-  TABLE_ID: "tblpvVpIJnkWco25E",
+  TABLE_ID: "tblbf2TwwlycoVvQq",
   TITLES_TABLE_ID: "tblppx6qNXXNJL7ON",
   TITLES_FIELD_NAME: "Title",
   TITLES_ASSIGNED_FIELD: "Assigned Modules",
