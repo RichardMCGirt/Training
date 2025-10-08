@@ -174,3 +174,273 @@ textarea{min-height:90px;resize:vertical}
   }
   .nav-list.open { display: flex; }
 }
+/* ===== Questions list / modules ===== */
+
+.qtoolbar { gap: 10px; align-items: center; }
+.qtoolbar h2 { margin: 0; }
+.qfilters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.qfilters input[type="search"] {
+  min-width: 280px;
+}
+
+.toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.toggle input { accent-color: var(--brand); }
+
+/* Module section wrapper produced by renderModulesView() */
+#moduleGroups { display: grid; gap: 10px; }
+
+/* Each module container */
+.mod {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #fff;
+  overflow: hidden;
+}
+
+/* Clickable header that toggles body (button.mod-head) */
+.mod-head {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: .75rem;
+  padding: 12px 14px;
+  background: linear-gradient(180deg, #fff 0%, var(--hover) 100%);
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+/* Module name */
+.mod-head > span:first-child {
+  font-weight: 800;
+  letter-spacing: .2px;
+}
+
+/* Count badge */
+.mod-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 8px;
+  background: #fff;
+  font-size: 12px;
+  color: #475569;
+}
+
+/* Add a chevron via CSS so no extra markup needed */
+.mod-head::after {
+  content: "▸";
+  font-size: 14px;
+  opacity: .7;
+  transition: transform .18s ease;
+  justify-self: end;
+}
+
+/* Rotate chevron when expanded */
+.mod-head[aria-expanded="true"]::after {
+  transform: rotate(90deg);
+}
+
+/* Module body (hidden/unhidden by JS). We keep spacing and subtle divider. */
+.mod-body {
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--border);
+  background: #fff;
+}
+
+/* Individual question row */
+.qline {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: start;
+  padding: 10px 8px;
+  border-radius: 10px;
+  transition: background .15s ease, box-shadow .15s ease;
+}
+
+/* Hover state on a question row */
+.qline:hover {
+  background: var(--hover);
+  box-shadow: 0 1px 0 rgba(0,0,0,.04) inset;
+}
+
+/* Question text block */
+.qtext > div:first-child { /* the <strong>Question</strong> line */
+  line-height: 1.35;
+}
+.qtext .small {
+  margin-top: 2px;
+}
+
+/* Right-hand action buttons in each row */
+.qline .actions .btn {
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+/* “Edit” ghost button */
+.qline .actions .btn.btn-ghost {
+  border-color: transparent;
+}
+
+/* “Delete” emphasis aligned with your palette */
+.qline .actions .btn.btn-danger {
+  border-color: #fecaca;
+  background: #fff5f5;
+  color: #b91c1c;
+}
+
+/* Spacing between questions inside a module body */
+.mod-body .qline + .qline {
+  margin-top: 6px;
+}
+
+/* Mobile niceties */
+@media (max-width: 700px) {
+  .qfilters { width: 100%; }
+  .qfilters input[type="search"] { min-width: 0; flex: 1; }
+  .qline {
+    grid-template-columns: 1fr; /* stack actions below on small screens */
+  }
+  .qline .actions { justify-content: flex-start; }
+}
+/* ========== Create / Edit Question Panel ========== */
+
+.card-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px 16px;
+}
+.form-grid .col-span-2 { grid-column: 1 / -1; }
+
+.field { display:flex; flex-direction:column; gap:6px; }
+.field .hint { color: var(--muted); }
+.label-mini { font-size: 11px; color: var(--muted); }
+
+.section-title { font-weight: 700; }
+.inline { display:flex; gap:8px; align-items:center; }
+.inline .grow { flex: 1 1 auto; }
+
+.kbd {
+  display:inline-block; padding:2px 6px; border:1px solid var(--border);
+  border-radius:6px; font-size:11px; background:#fafafa;
+}
+
+.meta-row {
+  display:flex; align-items:center; justify-content:space-between;
+  margin-top: 4px;
+}
+
+textarea#questionText {
+  resize: vertical;
+  min-height: 96px;
+  line-height: 1.4;
+}
+
+/* Two-column mini grid (Slide/Order) */
+.two-col {
+  display:grid; grid-template-columns: 1fr 160px; gap: 10px 12px;
+}
+
+/* New module inline row */
+.add-new-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.chips-row {
+  display:flex; flex-wrap:wrap; gap: 6px; margin-top: 6px;
+}
+.chip {
+  display:inline-flex; align-items:center; gap:6px;
+  padding: 4px 8px; border:1px solid var(--border); border-radius:999px;
+  background:#fff; font-size:12px; color:#475569;
+}
+.chip .x { font-weight:700; opacity:.6; cursor:pointer; }
+
+/* Options list (MC) */
+.options { display:flex; flex-direction:column; gap:8px; margin-top:8px; }
+
+/* Generic row look for option lines—works even if your JS outputs different class names */
+.options > * {
+  display:grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #fff;
+  transition: box-shadow .12s ease, border-color .12s ease, background .12s ease;
+}
+
+/* Handle/drag affordance (if present) */
+.options [data-handle],
+.options .handle,
+.options .drag {
+  cursor: grab;
+  user-select: none;
+  font-size: 18px;
+  opacity: .5;
+}
+
+/* Option input/text */
+.options input[type="text"],
+.options textarea {
+  width: 100%;
+}
+
+/* Correct answer highlight (when your JS toggles [data-correct="true"] or .is-correct) */
+.options > [data-correct="true"],
+.options > .is-correct {
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+
+/* Remove button look */
+.options .btn-remove,
+.options .btn-danger {
+  border-color: #fecaca;
+  background: #fff5f5;
+  color: #b91c1c;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+/* Top row helpers */
+.row.spread { display:flex; align-items:center; justify-content:space-between; }
+.row.gap-6 { display:flex; gap:6px; }
+
+/* Buttons */
+.btn-ghost {
+  background:#fff;
+  color:#334155;
+  border-color: var(--border);
+}
+.btn-ghost:hover { background: var(--hover); }
+
+/* Responsive */
+@media (max-width: 900px) {
+  .form-grid { grid-template-columns: 1fr; }
+  .two-col { grid-template-columns: 1fr 140px; }
+}
+@media (max-width: 520px) {
+  .two-col { grid-template-columns: 1fr; }
+  .options > * { grid-template-columns: auto 1fr auto; }
+}

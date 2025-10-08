@@ -25,83 +25,109 @@
 
     <div class="grid" style="margin-top:12px">
       <section class="card">
-        <div class="row" style="justify-content:space-between">
-          <h2>Questions</h2>
-          <div id="listStatus" class="muted small">–</div>
-        </div>
-        <div id="moduleGroups" class="stage"><div class="muted">Loading…</div></div>
+       <div class="row qtoolbar" style="justify-content:space-between">
+  <h2>Questions</h2>
+
+  <div class="qfilters">
+    <input id="search" type="search" placeholder="Search …" autocomplete="off" />
+    <label class="toggle">
+      <input id="fltActive" type="checkbox" checked />
+      <span>Active</span>
+    </label>
+    <label class="toggle">
+      <input id="fltInactive" type="checkbox" />
+      <span>Inactive</span>
+    </label>
+    <button id="btnRefresh" class="btn">Refresh</button>
+  </div>
+</div>
+
+<div id="listStatus" class="muted small">–</div>
+<div id="moduleGroups" class="stage"><div class="muted">Loading…</div></div>
+
       </section>
 
-      <aside class="card">
-        <h2>Create / Edit Question</h2>
-        <div class="divider"></div>
+   <aside class="card">
+  <div class="card-head">
+    <h2>Create / Edit Question</h2>
+  </div>
+  <div class="divider"></div>
 
-        <label class="section-title">Question Type</label>
-        <select id="questionType">
-          <option value="MC">Multiple Choice</option>
-          <option value="FITB">Fill in the Blank</option>
-        </select>
-
-        <div class="two-col" style="display:none">
-          <div>
-            <label class="section-title">Slide ID (optional)</label>
-            <input id="slideId" placeholder="e.g., g123..._0_5" />
-          </div>
-          <div>
-            <label class="section-title">Order</label>
-            <input id="order" type="number" value="1" />
-          </div>
-          <label class="section-title" style="margin-top:8px">Question ID</label>
-          <input id="questionId" placeholder="q_auto…" />
-        </div>
-
-        <label class="section-title" style="margin-top:8px">Question Text</label>
-        <textarea id="questionText"></textarea>
-
-        <div class="field" style="margin-top:8px">
-          <label class="section-title">Module</label>
-          <div class="inline">
-            <select id="moduleSelect" class="grow">
-              <option value="">(none)</option>
-            </select>
-          </div>
-          <div id="moduleNewWrap" class="add-new-row hide">
-            <span class="label-mini">New module name</span>
-            <input id="moduleInput" class="grow" placeholder="e.g., Safety, Basics, Deck-1" />
-            <span class="hint small">Tip: press <span class="kbd">Enter</span> to commit.</span>
-          </div>
-          <div id="moduleChips" class="muted small" style="margin-top:6px"></div>
-        </div>
-
-        <div id="mcBlock" style="margin-top:12px">
-          <div class="row" style="justify-content:space-between">
-            <label class="section-title">Options</label>
-            <div class="row">
-              <button id="btnAddOption" class="btn">+ Option</button>
-              <button id="btnClearOptions" class="btn">Clear</button>
-            </div>
-          </div>
-          <div id="options"></div>
-        </div>
-
-        <div id="fitbBlock" style="margin-top:12px; display:none">
-          <label class="section-title">Accepted Answers</label>
-          <textarea id="fitbAnswers" placeholder="One per line (or comma-separated)…"></textarea>
-          <div class="inline">
-            <label><input id="fitbUseRegex" type="checkbox"> Treat as Regular Expressions</label>
-            <label><input id="fitbCaseSensitive" type="checkbox"> Case Sensitive</label>
-          </div>
-          <div class="hint small" style="margin-top:4px">Examples: <code>^yes$</code>, <code>yep|yeah</code></div>
-        </div>
-
-        <div class="divider"></div>
-
-        <div class="row" style="justify-content:flex-end">
-          <button id="btnReset" class="btn">Reset</button>
-          <button id="btnSave" class="btn btn-primary">Save</button>
-        </div>
-      </aside>
+  <div class="form-grid">
+    <!-- Question Type -->
+    <div class="field">
+      <label class="section-title">Question Type</label>
+      <select id="questionType">
+        <option value="MC">Multiple Choice</option>
+        <option value="FITB">Fill in the Blank</option>
+      </select>
+      <p class="hint small">Switching type keeps your text; options only appear for MC.</p>
     </div>
+
+    <!-- (Optional) Slide + Order + Question ID -->
+    <div class="field col-span-2">
+      <div class="two-col">
+        <div class="field">
+          <label class="section-title">Slide ID (optional)</label>
+          <input id="slideId" placeholder="e.g., g123..._0_5" />
+        </div>
+        <div class="field">
+          <label class="section-title">Order</label>
+          <input id="order" type="number" value="1" />
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="section-title">Question ID</label>
+        <input id="questionId" placeholder="q_auto…" />
+        <p class="hint small">Leave blank to auto-assign an ID.</p>
+      </div>
+    </div>
+
+    <!-- Question Text -->
+    <div class="field col-span-2">
+      <label class="section-title">Question Text</label>
+      <textarea id="questionText" rows="4" placeholder="Type your question here…"></textarea>
+      <div class="meta-row">
+        <span class="muted small">Make it concise; you can add context on the slide itself.</span>
+        <span id="qtCount" class="muted small">0 chars</span>
+      </div>
+    </div>
+
+    <!-- Module -->
+    <div class="field col-span-2">
+      <label class="section-title">Module</label>
+      <div class="inline">
+        <select id="moduleSelect" class="grow">
+          <option value="">(none)</option>
+        </select>
+      </div>
+
+      <!-- “New Module” inline add (keeps your IDs) -->
+      <div id="moduleNewWrap" class="add-new-row hide">
+        <span class="label-mini">New module name</span>
+        <input id="moduleInput" class="grow" placeholder="e.g., Safety, Basics, Deck-1" />
+        <span class="hint small">Tip: press <span class="kbd">Enter</span> to commit.</span>
+      </div>
+
+      <!-- Chips for module context (keeps your ID) -->
+      <div id="moduleChips" class="chips-row muted small"></div>
+    </div>
+
+    <!-- MC Options Block -->
+    <div id="mcBlock" class="field col-span-2">
+      <div class="row spread">
+        <label class="section-title">Options</label>
+        <div class="row gap-6">
+          <button id="btnAddOption" class="btn">+ Option</button>
+          <button id="btnClearOptions" class="btn btn-ghost">Clear</button>
+        </div>
+      </div>
+      <div id="options" class="options"></div>
+    </div>
+  </div>
+</aside>
+
 
     <section class="card" id="modmap-root" style="margin-top:16px">
       <h2>Module → Slides &amp; GAS</h2>
@@ -133,34 +159,8 @@
       <div id="modmap-list" class="stage"><div class="muted">Loading…</div></div>
     </section>
 
-    <!-- Titles toolbar -->
-    <div class="row" style="margin-top:16px">
-      <input id="titleSearch" type="search" placeholder="Search titles…" class="grow" autocomplete="off" />
-      <button id="btnSelectAllTitles" type="button" class="btn">Select all</button>
-      <button id="btnClearTitles" type="button" class="btn">Clear</button>
-      <span id="titleCount" class="muted">0 titles</span>
-    </div>
+ 
 
-    <!-- Titles multi-select -->
-    <select id="titleSelect" multiple size="10" class="full"></select>
-
-    <!-- Assignment panel -->
-    <div class="card" style="margin-top:12px">
-      <div class="row">
-        <input id="moduleSearch" type="search" placeholder="Search modules…" class="grow" autocomplete="off" />
-        <label><input id="chkShowAssignedFirst" type="checkbox" checked /> Show assigned first</label>
-        <button id="btnSelectAllModules" type="button" class="btn">Select all</button>
-        <button id="btnClearModules" type="button" class="btn">Clear</button>
-      </div>
-
-      <ul id="moduleList" class="module-list"></ul>
-
-      <div class="row" style="justify-content:flex-end">
-        <button id="btnAssign" type="button" class="btn primary">Assign to selected title(s)</button>
-        <button id="btnUnassign" type="button" class="btn danger">Unassign from selected title(s)</button>
-        <span id="assignStatus" class="muted"></span>
-      </div>
-    </div>
 
     <!-- Modules ↔ Titles matrix -->
     <section class="card" id="modtitle-root" style="margin-top:16px">
