@@ -516,3 +516,39 @@ textarea#questionText {
 @media (max-width: 560px) {
   .options-toolbar { justify-content: center; }
 }
+/* ===== Module → Slides & GAS ===== */
+#modmap-root .chips { gap: 6px; }
+#modmap-root .chips .chip {
+  cursor: pointer;
+  transition: background .12s ease, border-color .12s ease;
+}
+#modmap-root .chips .chip:hover {
+  background: var(--hover);
+  border-color: #cbd5e1;
+}
+
+#modmap-root .module-list { max-height: 460px; overflow: auto; }
+#modmap-root .module-list li {
+  grid-template-columns: 1fr auto 140px;
+}
+#modmap-root .module-list .meta { font-size: 12px; color: #64748b; }
+#modmap-root .badge {
+  padding: .15rem .45rem; border-radius: 999px;
+  font-size: .75rem; background: #fff;
+  border: 1px solid #ddd;
+}
+#modmap-root .badge.on  { border-color: #86efac; color: #059669; }
+#modmap-root .badge.off { border-color: #fecaca; color: #b91c1c; }
+
+#modmap-root .row.actions { gap: 8px; }
+#modmap-root .btn-mini {
+  padding: 6px 10px; border-radius: 8px; font-size: 12px;
+}
+
+/* state helpers */
+#modmap-status.ok  { color: var(--ok); }
+#modmap-status.bad { color: var(--bad); }
+
+@media (max-width: 720px) {
+  #modmap-root .module-list li { grid-template-columns: 1fr; gap: 6px; }
+}

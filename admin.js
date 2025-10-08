@@ -484,7 +484,6 @@ async function refreshList(){
   } catch (e) {
     console.error("[Admin] refreshList failed:", e);
     if (ui.listStatus) ui.listStatus.textContent = "Load failed.";
-    toast(e.message || "Load failed", "bad");
   }
 }
 
@@ -914,4 +913,327 @@ if (ui.btnUnassign) ui.btnUnassign.addEventListener("click", unassignSelected);
     renderModuleTitleLinker();
     toggleModuleNewVisibility(); // ensure hidden on load
   } catch (e) { console.error(e); toast(e.message || "Init failed", "bad"); }
+})();
+/* =========================
+ * Module → Slides & GAS
+ * ========================= */
+(function ModMapModule(){
+  // --- CONFIG: set your Airtable table for mappings here ---
+  const MODMAP_TABLE_ID = "Table3"; // You can change to a real table ID like "tblXXXX..." or a table name
+  // Field names in that table (create these columns in Airtable):
+  // - Module (single line text)
+  // - PresentationId (single line text)
+  // - GasUrl (single line text)
+  // - Active (checkbox)
+
+  // --- UI refs ---
+  const mm = {
+    root: document.getElementById("modmap-root"),
+    id:   document.getElementById("modmap-id"),
+    module: document.getElementById("modmap-module"),
+    pid:    document.getElementById("modmap-pid"),
+    gas:    document.getElementById("modmap-gas"),
+    active: document.getElementById("modmap-active"),
+    quick:  document.getElementById("modmap-quick"),
+    status: document.getElementById("modmap-status"),
+    save:   document.getElementById("modmap-save"),
+    reset:  document.getElementById("modmap-reset"),
+    list:   document.getElementById("modmap-list"),
+    search: document.getElementById("modmap-search"),
+    refresh:document.getElementById("modmap-refresh"),
+    ping:   document.getElementById("modmap-ping"),
+    openSlides: document.getElementById("modmap-open-slides"),
+    form:   document.getElementById("modmap-form")
+  };
+
+  if (!mm.root) return; // Section not on page; bail safely.
+
+  // --- Local state ---
+  const s = {
+    rows: [], // airtable records
+    query: ""
+  };
+
+  // --- Helpers ---
+  const setStatus = (msg, kind="") => {
+    if (!mm.status) return;
+    mm.status.textContent = msg || "";
+    mm.status.classList.remove("ok", "bad");
+    if (kind) mm.status.classList.add(kind);
+  };
+  const trim = v => (v||"").trim();
+
+  function slidesUrlFromId(pid){
+    const p = trim(pid);
+    if (!p) return "";
+    return `https://docs.google.com/presentation/d/${encodeURIComponent(p)}/edit`;
+  }
+
+  function validForm(data){
+    if (!data.Module)  return "Module is required.";
+    if (!data.PresentationId && !data.GasUrl) {
+      return "Provide at least a Slides Presentation ID or a GAS Web App URL.";
+    }
+    return "";
+  }
+
+  // Build quick-pick chips from known modules (populated by your Questions refresh)
+  function renderQuickChips(){
+    if (!mm.quick) return;
+    const mods = Array.from((window.state?.modules || new Set())).sort((a,b)=>a.localeCompare(b));
+    if (!mods.length){
+      mm.quick.innerHTML = `<span class="muted small">No modules detected yet.</span>`;
+      return;
+    }
+    mm.quick.innerHTML = mods.map(m => `<span class="chip" data-m="${esc(m)}">${esc(m)}</span>`).join("");
+    mm.quick.querySelectorAll(".chip").forEach(ch => {
+      ch.addEventListener("click", () => { mm.module.value = ch.getAttribute("data-m") || ""; });
+    });
+  }
+
+  // --- Airtable calls (reusing your helpers) ---
+  async function listAllModMaps(offset){
+    // Sort by Module asc for nicer UX
+    return listAll({ tableId: MODMAP_TABLE_ID, pageSize: 100, offset, sortField: "Module", sortDir: "asc" });
+  }
+
+  async function fetchAll(){
+    const out = [];
+    let offset;
+    do {
+      const page = await listAllModMaps(offset);
+      (page.records || []).forEach(r => out.push(r));
+      offset = page.offset;
+    } while (offset);
+    return out;
+  }
+
+  async function createModMap(fields){
+    const res = await fetch(baseUrl(MODMAP_TABLE_ID), {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ records: [{ fields }], typecast: true })
+    });
+    if (!res.ok) throw new Error(`Create failed: HTTP ${res.status} – ${await res.text()}`);
+    return res.json();
+  }
+
+  async function updateModMap(id, fields){
+    const res = await fetch(baseUrl(MODMAP_TABLE_ID), {
+      method: "PATCH",
+      headers: headers(),
+      body: JSON.stringify({ records: [{ id, fields }], typecast: true })
+    });
+    if (!res.ok) throw new Error(`Update failed: HTTP ${res.status} – ${await res.text()}`);
+    return res.json();
+  }
+
+  async function deleteModMap(id){
+    const url = `${baseUrl(MODMAP_TABLE_ID)}/${encodeURIComponent(id)}`;
+    const res = await fetch(url, { method: "DELETE", headers: headers() });
+    if (!res.ok) throw new Error(`Delete failed: HTTP ${res.status} – ${await res.text()}`);
+    return res.json();
+  }
+
+  // --- Render saved mappings ---
+  function renderList(){
+    if (!mm.list) return;
+    const q = (s.query||"").toLowerCase();
+
+    const items = s.rows.filter(r => {
+      const f = r.fields || {};
+      const hay = `${f.Module||""}\n${f.PresentationId||""}\n${f.GasUrl||""}`.toLowerCase();
+      return !q || hay.includes(q);
+    });
+
+    if (!items.length){
+      mm.list.innerHTML = `
+        <div class="module-empty" style="margin-top:8px">
+          No mappings yet. Create one above.
+        </div>`;
+      return;
+    }
+
+    mm.list.innerHTML = items.map(r => {
+      const f = r.fields || {};
+      const mod = esc(f.Module || "(no module)");
+      const pid = esc(f.PresentationId || "");
+      const gas = esc(f.GasUrl || "");
+      const active = !!f.Active;
+      const tag = active ? `<span class="badge on">Active</span>` : `<span class="badge off">Inactive</span>`;
+      const meta = [
+        pid ? `Slides: ${pid.slice(0, 10)}…` : null,
+        gas ? `GAS: ${gas.slice(0, 28)}…` : null
+      ].filter(Boolean).join(" • ");
+
+      return `
+        <li data-id="${esc(r.id)}">
+          <div class="pick">
+            <div>
+              <div class="name">${mod}</div>
+              <div class="meta">${esc(meta)}</div>
+            </div>
+          </div>
+          ${tag}
+          <div class="row actions">
+            <button class="btn btn-ghost btn-mini" data-mm="edit">Edit</button>
+            <button class="btn btn-danger btn-mini" data-mm="del">Delete</button>
+          </div>
+        </li>
+      `;
+    }).join("");
+
+    // wire up actions
+    mm.list.querySelectorAll("li").forEach(li => {
+      const id = li.getAttribute("data-id");
+      const row = s.rows.find(x => x.id === id);
+
+      const btnE = li.querySelector('[data-mm="edit"]');
+      const btnD = li.querySelector('[data-mm="del"]');
+
+      if (btnE) btnE.addEventListener("click", () => fillFormFromRow(row));
+      if (btnD) btnD.addEventListener("click", async () => {
+        const name = row?.fields?.Module || "(no module)";
+        if (!confirm(`Delete mapping for “${name}”?`)) return;
+        try {
+          await deleteModMap(id);
+          toast("Deleted", "ok");
+          await refresh();
+        } catch(e){ console.error(e); toast(e.message||"Delete failed","bad"); }
+      });
+    });
+  }
+
+  // --- Form helpers ---
+  function clearForm(){
+    if (mm.id) mm.id.value = "";
+    if (mm.module) mm.module.value = "";
+    if (mm.pid) mm.pid.value = "";
+    if (mm.gas) mm.gas.value = "";
+    if (mm.active) mm.active.checked = true;
+    if (mm.openSlides) mm.openSlides.disabled = true;
+    setStatus("");
+  }
+
+  function readForm(){
+    const data = {
+      Module: trim(mm.module?.value),
+      PresentationId: trim(mm.pid?.value),
+      GasUrl: trim(mm.gas?.value),
+      Active: !!mm.active?.checked
+    };
+    const err = validForm(data);
+    if (err) throw new Error(err);
+    return data;
+  }
+
+  function fillFormFromRow(row){
+    const f = row?.fields || {};
+    if (mm.id) mm.id.value = row?.id || "";
+    if (mm.module) mm.module.value = f.Module || "";
+    if (mm.pid) mm.pid.value = f.PresentationId || "";
+    if (mm.gas) mm.gas.value = f.GasUrl || "";
+    if (mm.active) mm.active.checked = !!f.Active;
+    if (mm.openSlides) mm.openSlides.disabled = !trim(f.PresentationId);
+    setStatus(`Editing “${f.Module || ""}”`);
+    window.scrollTo({ top: mm.root.offsetTop - 12, behavior: "smooth" });
+  }
+
+  // --- Actions ---
+  async function refresh(){
+    setStatus("Loading…");
+    try {
+      // ensure quick chips show current modules
+      renderQuickChips();
+      s.rows = await fetchAll();
+      renderList();
+      setStatus(`Loaded ${s.rows.length} mapping${s.rows.length===1?"":"s"}.`, "ok");
+    } catch (e) {
+      console.error(e);
+      setStatus("Load failed.", "bad");
+      toast(e.message || "Load failed", "bad");
+    }
+  }
+
+  async function onSave(e){
+    e?.preventDefault?.();
+    try {
+      const fields = readForm();
+      mm.save.disabled = true;
+      setStatus("Saving…");
+
+      const id = trim(mm.id?.value);
+      if (id) {
+        await updateModMap(id, fields);
+      } else {
+        await createModMap(fields);
+      }
+
+      toast("Saved", "ok");
+      clearForm();
+      await refresh();
+    } catch(e){
+      console.error(e);
+      toast(e.message || "Save failed", "bad");
+      setStatus(e.message || "Save failed", "bad");
+    } finally {
+      mm.save.disabled = false;
+    }
+  }
+
+  function onReset(){ clearForm(); }
+
+  function onSearch(){
+    s.query = trim(mm.search?.value).toLowerCase();
+    renderList();
+  }
+
+  async function onPing(){
+    const url = trim(mm.gas?.value);
+    if (!url) { toast("Enter a GAS Web App URL first.", "bad"); return; }
+    setStatus("Pinging GAS…");
+    try {
+      // Simple GET; many GAS apps allow ?mode=ping for health—works even if ignored.
+      const res = await fetch(url + (url.includes("?") ? "&" : "?") + "mode=ping", { method: "GET" });
+      const ok = res.ok;
+      setStatus(ok ? "GAS responded OK" : `GAS responded ${res.status}`, ok ? "ok" : "bad");
+      toast(ok ? "Ping OK" : `Ping ${res.status}`, ok ? "ok" : "bad");
+    } catch(e){
+      console.warn(e);
+      setStatus("Ping failed (likely CORS)", "bad");
+      toast("Ping failed", "bad");
+    }
+  }
+
+  function onOpenSlides(){
+    const url = slidesUrlFromId(mm.pid?.value);
+    if (!url) return;
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+
+  function onPidInput(){
+    const has = !!trim(mm.pid?.value);
+    if (mm.openSlides) mm.openSlides.disabled = !has;
+  }
+
+  // --- Wire events ---
+  if (mm.form)   mm.form.addEventListener("submit", onSave);
+  if (mm.reset)  mm.reset.addEventListener("click", onReset);
+  if (mm.search) mm.search.addEventListener("input", debounce(onSearch, 150));
+  if (mm.refresh)mm.refresh.addEventListener("click", refresh);
+  if (mm.ping)   mm.ping.addEventListener("click", onPing);
+  if (mm.openSlides) mm.openSlides.addEventListener("click", onOpenSlides);
+  if (mm.pid)    mm.pid.addEventListener("input", onPidInput);
+
+  // --- Init ---
+  (async function initModMap(){
+    try {
+      renderQuickChips();
+      onPidInput();
+      await refresh();
+    } catch(e){
+      console.error(e);
+      toast(e.message || "Init (modmap) failed", "bad");
+    }
+  })();
 })();
