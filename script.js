@@ -29,9 +29,10 @@ const state = {
   gasUrl: "",
   slides: [],                // [{ objectId, title }]
   i: 0,                      // current index
-  answers: {},               // { [questionId]: { answer, isCorrect, at } }
+  answers: {},               // { [questionId]: { answer, isCorrect, at } }  (NOT used to prefill UI)
   quizByIndex: {},           // filled from Airtable
   quizBySlideId: {},         // filled from Airtable
+  // We ignore prior answers for rendering regardless of this flag.
   retake: new URLSearchParams(location.search).get("reset") === "1"
 };
 
@@ -64,11 +65,18 @@ const AIR = {
 };
 
 /** ⇩⇩⇩ FIELD NAMES YOU CAN CHANGE IF YOUR BASE DIFFERS ⇩⇩⇩ */
+/** ⇩⇩⇩ FIELD NAMES YOU CAN CHANGE IF YOUR BASE DIFFERS ⇩⇩⇩ */
 const ANSWER_FIELDS = {
-  RESULT_FIELD: "Result",       // Single select with options: "Right", "Wrong"
-  WRONG_ATTEMPTS_FIELD: "Wrong Attempts",// Number field
-  CORRECT_ANSWER_FIELD: "Correct Answer" // Single line text (or long text)
+  RESULT_FIELD: "Result",                 // Single select: "Right" | "Wrong"
+  WRONG_ATTEMPTS_FIELD: "Wrong Attempts", // Number
+  CORRECT_ANSWER_FIELD: "Correct Answer", // Text
+
+  TIMESTAMP_FIELD: "Timestamp",           // Date with time
+  QUESTION_FIELD: "Question",             // Text (single/long)
+  TYPE_FIELD: "Type"                      // Single select or text ("MC" | "FITB")
 };
+/** ⇧⇧⇧ FIELD NAMES YOU CAN CHANGE IF YOUR BASE DIFFERS ⇧⇧⇧ */
+
 /** ⇧⇧⇧ FIELD NAMES YOU CAN CHANGE IF YOUR BASE DIFFERS ⇧⇧⇧ */
 
 function _headers(){
@@ -244,7 +252,7 @@ function shuffleInPlace(a){
   return a;
 }
 
-// ===== Your fetchQuestionsFromAirtable (replace your current version with this) =====
+// ===== Fetch questions =====
 async function fetchQuestionsFromAirtable(){
   const selectedModule = state.module;
 
@@ -292,19 +300,17 @@ async function fetchQuestionsFromAirtable(){
 
   const quizByIndex = {};
   const quizBySlideId = {};
-  const noOrder = []; // optional bucket for records without a valid Order
+  const noOrder = [];
 
   all.forEach(rec => {
     const f = rec.fields || {};
     const order = Number(f["Order"] ?? NaN);
 
-    // Parse MC options
     const optsRaw = (f["Options (JSON)"] || "[]");
     let options = [];
     try { options = Array.isArray(optsRaw) ? optsRaw : JSON.parse(optsRaw); } catch {}
 
-    // Parse FITB answers
-    const fitbRaw = (f["FITB Answers (JSON)"] || "[]");
+const fitbRaw = (f["FITB Answers (JSON)"] || "[]");
     let fitbAnswers = [];
     try { fitbAnswers = Array.isArray(fitbRaw) ? fitbRaw : JSON.parse(fitbRaw); } catch {}
 
@@ -329,23 +335,18 @@ async function fetchQuestionsFromAirtable(){
 
     const slideId = f["Slide ID"] || "";
     if (slideId) {
-      // NOTE: if multiple rows share the same Slide ID, the last one will win.
-      // You can switch this to an array if you truly want multiple per slide.
       quizBySlideId[slideId] = q;
     }
 
-    // --- collision-safe placement by Order ---
     if (!Number.isNaN(order) && order > 0) {
       let idx = Math.max(0, order - 1);
-      while (quizByIndex[idx]) idx++; // find next free slot if collided
+      while (quizByIndex[idx]) idx++;
       quizByIndex[idx] = q;
     } else {
-      // keep track of "missing/invalid order" questions (optional)
       noOrder.push(q);
     }
   });
 
-  // Append "no-order" questions at the end so they still show (optional)
   if (noOrder.length) {
     const start = Math.max(-1, ...Object.keys(quizByIndex).map(k => +k).filter(Number.isFinite)) + 1;
     for (let i = 0; i < noOrder.length; i++) {
@@ -355,14 +356,11 @@ async function fetchQuestionsFromAirtable(){
     }
   }
 
-  // Randomize ONLY the index-based sequence (keeps any Slide-ID-tied questions as-is)
   if (RANDOMIZE_QUESTIONS) {
     const arr = [];
     const max = Math.max(-1, ...Object.keys(quizByIndex).map(k => Number(k)).filter(Number.isFinite));
     for (let i = 0; i <= max; i++) { if (quizByIndex[i]) arr.push(quizByIndex[i]); }
-
     shuffleInPlace(arr);
-
     const shuffled = {};
     for (let i = 0; i < arr.length; i++) shuffled[i] = arr[i];
     for (const k of Object.keys(quizByIndex)) delete quizByIndex[k];
@@ -372,7 +370,6 @@ async function fetchQuestionsFromAirtable(){
   state.quizByIndex = quizByIndex;
   state.quizBySlideId = quizBySlideId;
 }
-
 
 /* ========================================================================== */
 /* Thumbnails                                                                 */
@@ -444,7 +441,7 @@ function render(){
   if (el.nextBtn) el.nextBtn.disabled = state.i >= (state.slides.length - 1);
 
   renderThumbs();
-  saveLocalProgress();
+  saveLocalProgress(); // this stores counts, not answers, and NEVER re-populates UI
 }
 
 /* ------------------ Quiz selection ---------------------------------------- */
@@ -457,7 +454,7 @@ function currentQuizForIndex(i){
   return state.quizByIndex[i] || null;
 }
 
-/* ------------------ Render quiz ------------------------------------------- */
+/* ------------------ Render quiz (no prior-answer display) ------------------ */
 
 function renderQuiz(quiz) {
   if (!el.quizBox) return;
@@ -468,14 +465,13 @@ function renderQuiz(quiz) {
     return;
   }
 
-  const priorAns = state.retake ? "" : (state.answers[quiz.questionId]?.answer || "");
-
+  // IMPORTANT: We NEVER show prior answers. No checked radios; no input value.
   if (quiz.type === "MC") {
     const opts = (quiz.options || [])
       .map(o => {
-        const checked = (!state.retake && o === priorAns) ? "checked" : "";
+        // No "checked" attribute → nothing is pre-selected.
         return `<label class="opt">
-          <input type="radio" name="opt" value="${att(o)}" ${checked} autocomplete="off"/>
+          <input type="radio" name="opt" value="${att(o)}" autocomplete="off"/>
           <div><strong>${esc(o)}</strong></div>
         </label>`;
       })
@@ -485,19 +481,28 @@ function renderQuiz(quiz) {
       <div><strong>${esc(quiz.question)}</strong> ${quiz.required ? `<span class="pill">Required</span>` : ""}</div>
       <div>${opts || `<div class="muted">No options set.</div>`}</div>
     `;
+
+    // Defensive: ensure nothing is checked if the browser tries to restore state.
+    const radios = el.quizBox.querySelectorAll('input[type="radio"][name="opt"]');
+    radios.forEach(r => { r.checked = false; r.autocomplete = "off"; });
+
     if (el.btnSubmit) el.btnSubmit.disabled = !(quiz.options && quiz.options.length);
     if (el.saveStatus) el.saveStatus.textContent = "";
     return;
   }
 
-  // FITB
-  const valueAttr = state.retake ? "" : att(priorAns);
+  // FITB: always empty value
   el.quizBox.innerHTML = `
     <div><strong>${esc(quiz.question)}</strong> ${quiz.required ? `<span class="pill">Required</span>` : ""}</div>
     <div class="row" style="margin-top:8px">
-      <input id="fitb" placeholder="Type your answer" value="${valueAttr}" autocomplete="off"/>
+      <input id="fitb" placeholder="Type your answer" value="" autocomplete="off"/>
     </div>
   `;
+
+  // Defensive clear in case the browser tries to restore text
+  const fitb = el.quizBox.querySelector("#fitb");
+  if (fitb) { fitb.value = ""; fitb.autocomplete = "off"; }
+
   if (el.btnSubmit) el.btnSubmit.disabled = false;
   if (el.saveStatus) el.saveStatus.textContent = "";
 }
@@ -512,26 +517,138 @@ function getUserAnswer(quiz){
   return input ? input.value.trim() : "";
 }
 
-function isFitbCorrect(ans, answers, { useRegex=false, caseSensitive=false }={}){
-  const hay = caseSensitive ? ans : ans.toLowerCase();
-  const pool = (answers||[]).map(a=> caseSensitive ? String(a||"") : String(a||"").toLowerCase());
-  if (!useRegex) return pool.includes(hay);
-  try {
-    return pool.some(p => {
-      const m = p.match(/^\/(.*)\/([gimsuy]*)$/);
-      const rx = m ? new RegExp(m[1], m[2]) : new RegExp(p);
-      return rx.test(ans);
+/** ──────────────────────────────────────────────────────────────────
+ * Helpers to coerce to arrays and normalize strings
+ * ────────────────────────────────────────────────────────────────── */
+function _normalizeString(s, { caseSensitive } = {}) {
+  const t = String(s ?? "").trim().replace(/\s+/g, " ");
+  return caseSensitive ? t : t.toLowerCase();
+}
+function _looksLikeJsonArray(s) {
+  return typeof s === "string" && /^\s*\[/.test(s);
+}
+function _splitSmart(s) {
+  return String(s ?? "")
+    .split(/[|,\n;]+/g)
+    .map(x => x.trim())
+    .filter(Boolean);
+}
+
+function toStringArray(v) {
+  if (Array.isArray(v)) return v.map(x => String(x ?? ""));
+  if (v == null) return [];
+  if (_looksLikeJsonArray(v)) {
+    try {
+      const parsed = JSON.parse(v);
+      if (Array.isArray(parsed)) return parsed.map(x => String(x ?? ""));
+    } catch {}
+  }
+  if (typeof v === "string") return _splitSmart(v);
+  return [String(v)];
+}
+function buildCorrectAnswerDisplay(correct) {
+  return toStringArray(correct).join(" | ");
+}
+/**
+ * Returns a *normalized* array of strings (trimmed, de-duped, lowercased).
+ */
+function toNormSet(v) {
+  const arr = toStringArray(v).map(_normalizeString).filter(Boolean);
+  // de-dupe
+  return Array.from(new Set(arr));
+}
+/** ──────────────────────────────────────────────────────────────────
+ * Fill-in-the-blank correctness
+ *
+ * Accepts userAnswer and correctAnswers in multiple shapes:
+ * - userAnswer: string or array of strings
+ * - correctAnswers: string (delimited, JSON array string), or array
+ *
+ * By default:
+ * - If counts match → compare positionally.
+ * - If counts differ → require every user entry to exist in the correct set.
+ *   (for single blank this is a simple “member of correct set”)
+ * ────────────────────────────────────────────────────────────────── */
+function isFitbCorrect(userAnswer, correctAnswers, opts = {}) {
+  const { useRegex = false, caseSensitive = false } = opts;
+  const userArr = toStringArray(userAnswer);
+  const corrArr = toStringArray(correctAnswers);
+  if (userArr.length === 0 || corrArr.length === 0) return false;
+
+  if (useRegex) {
+    const rx = corrArr.map(p => {
+      try { return new RegExp(p, caseSensitive ? "" : "i"); }
+      catch {
+        const esc = p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        return new RegExp(esc, caseSensitive ? "" : "i");
+      }
     });
-  } catch { return false; }
+    if (userArr.length === corrArr.length) {
+      for (let i = 0; i < userArr.length; i++) if (!rx[i].test(String(userArr[i] ?? ""))) return false;
+      return true;
+    }
+    return userArr.every(u => rx.some(r => r.test(String(u ?? ""))));
+  }
+
+  const U = userArr.map(s => _normalizeString(s, { caseSensitive }));
+  const C = corrArr.map(s => _normalizeString(s, { caseSensitive }));
+  if (U.length === C.length) {
+    for (let i = 0; i < U.length; i++) if (U[i] !== C[i]) return false;
+    return true;
+  }
+  const set = new Set(C);
+  return U.every(u => set.has(u));
+}
+/**
+ * Build a nice display string for the "Correct Answer" field,
+ * no matter how the correct answers are stored.
+ */
+function buildCorrectAnswerDisplay(correctAnswers) {
+  const arr = toStringArray(correctAnswers);
+  return arr.join(" | ");
+}
+
+function mapQuestionRecord(rec) {
+  const f = rec.fields || {};
+  const type = String(f.Type || "").toUpperCase();
+
+  return {
+    questionId: rec.id,
+    type,                                 // "MC" or "FITB"
+    question: String(f.Question || ""),
+    order: Number(f.Order || 0),
+
+    // MC field (single string, e.g., "A")
+    correct: f.Correct ?? "",
+
+    // FITB field (JSON array string or delimited string)
+    fitbAnswers: f["FITB Answers (JSON)"] ?? "",
+
+    // optional flags for FITB
+    fitbUseRegex: !!f["FITB Use Regex"],
+    fitbCaseSensitive: !!f["FITB Case Sensitive"]
+  };
 }
 
 /* ------------------ Save answers (UPSERT with Wrong Attempts) ------------- */
 
-async function upsertAnswerRecordWithWrongCount({ userEmail, presentationId, questionId, answer, isCorrect, correctAnswer }){
+async function upsertAnswerRecordWithWrongCount({
+  userEmail,
+  presentationId,
+  questionId,
+  answer,
+  isCorrect,
+  correctAnswer,
+  questionText,   // NEW
+  type,           // NEW: "MC" | "FITB"
+  timestamp       // NEW: ISO string
+}){
   // 1) Look up existing record for this (user, deck, question)
   const url = new URL(aBaseUrl());
   const e = s => String(s||"").replace(/'/g, "\\'");
-  url.searchParams.set("filterByFormula", `AND({UserEmail}='${e(userEmail)}',{PresentationId}='${e(presentationId)}',{QuestionId}='${e(questionId)}')`);
+  url.searchParams.set("filterByFormula",
+    `AND({UserEmail}='${e(userEmail)}',{PresentationId}='${e(presentationId)}',{QuestionId}='${e(questionId)}')`
+  );
   url.searchParams.set("pageSize", "1");
 
   const getRes = await fetch(url.toString(), { headers: aHeaders() });
@@ -544,19 +661,22 @@ async function upsertAnswerRecordWithWrongCount({ userEmail, presentationId, que
     const existingIsCorrect = !!f.IsCorrect;
 
     let wrongAttempts = Number(f[ANSWER_FIELDS.WRONG_ATTEMPTS_FIELD] || 0);
-    // increment Wrong Attempts ONLY when the new submission is wrong
     if (!isCorrect) wrongAttempts = Number.isFinite(wrongAttempts) ? wrongAttempts + 1 : 1;
 
-    // Single-select label (do not flip a prior "Right" to "Wrong")
     const resultStr = (existingIsCorrect || isCorrect) ? "Right" : "Wrong";
 
-    const patchFields = {
-      Answer: answer,
-      [ANSWER_FIELDS.CORRECT_ANSWER_FIELD]: correctAnswer,
-      [ANSWER_FIELDS.WRONG_ATTEMPTS_FIELD]: wrongAttempts,
-      IsCorrect: existingIsCorrect ? true : !!isCorrect, // never overwrite true -> false
-      [ANSWER_FIELDS.RESULT_FIELD]: resultStr
-    };
+   const patchFields = {
+  Answer: answer,
+  [ANSWER_FIELDS.CORRECT_ANSWER_FIELD]: correctAnswer,
+  [ANSWER_FIELDS.WRONG_ATTEMPTS_FIELD]: wrongAttempts,
+  IsCorrect: existingIsCorrect ? true : !!isCorrect,
+  [ANSWER_FIELDS.RESULT_FIELD]: resultStr,
+
+  [ANSWER_FIELDS.TIMESTAMP_FIELD]: timestamp,
+  [ANSWER_FIELDS.QUESTION_FIELD]: questionText,
+  [ANSWER_FIELDS.TYPE_FIELD]: type
+};
+
 
     const patchRes = await fetch(aBaseUrl(), {
       method: "PATCH",
@@ -576,7 +696,12 @@ async function upsertAnswerRecordWithWrongCount({ userEmail, presentationId, que
     IsCorrect: !!isCorrect,
     [ANSWER_FIELDS.CORRECT_ANSWER_FIELD]: correctAnswer,
     [ANSWER_FIELDS.WRONG_ATTEMPTS_FIELD]: (!isCorrect ? 1 : 0),
-    [ANSWER_FIELDS.RESULT_FIELD]: isCorrect ? "Right" : "Wrong"
+    [ANSWER_FIELDS.RESULT_FIELD]: isCorrect ? "Right" : "Wrong",
+
+    // NEW fields:
+    [ANSWER_FIELDS.TIMESTAMP_FIELD]: timestamp,
+    [ANSWER_FIELDS.QUESTION_FIELD]: questionText,
+    [ANSWER_FIELDS.TYPE_FIELD]: type
   };
 
   const res = await fetch(aBaseUrl(), {
@@ -589,7 +714,9 @@ async function upsertAnswerRecordWithWrongCount({ userEmail, presentationId, que
   return json?.records?.[0]?.id || null;
 }
 
+
 async function loadExistingAnswersForUser(presentationId, userEmail){
+  // We keep this to support resume/progress counts, but NEVER render prior answers.
   if (!userEmail) return {};
   const url = new URL(aBaseUrl());
   const e = s => String(s||"").replace(/'/g, "\\'");
@@ -678,20 +805,17 @@ async function onDeckLoaded(presentationId, slidesArray){
   if (el.prevBtn) el.prevBtn.disabled = state.i <= 0;
   if (el.nextBtn) el.nextBtn.disabled = state.slides.length <= 1;
 
-  if (state.retake) {
-    state.answers = {};
-  } else {
-    try {
-      const prior = await loadExistingAnswersForUser(
-        state.presentationId,
-        (el.userEmail?.value||localStorage.getItem('trainingEmail')||'').trim()
-      );
-      state.answers = Object.assign({}, prior);
-      state.i = nextUnansweredIndex();
-      const pageId = state.slides[state.i]?.objectId || "";
-      showEmbed(state.presentationId, pageId);
-    } catch(e){ console.warn('Resume load failed', e); }
-  }
+  // Load prior answers ONLY to position progress (never to prefill UI)
+  try {
+    const prior = await loadExistingAnswersForUser(
+      state.presentationId,
+      (el.userEmail?.value||localStorage.getItem('trainingEmail')||'').trim()
+    );
+    state.answers = Object.assign({}, prior);
+    state.i = nextUnansweredIndex();
+    const pageId = state.slides[state.i]?.objectId || "";
+    showEmbed(state.presentationId, pageId);
+  } catch(e){ console.warn('Resume load failed', e); }
 
   if (el.btnRetry) {
     el.btnRetry.onclick = () => {
@@ -737,60 +861,70 @@ window.addEventListener("keydown", (e) => {
 
 /* ------------------ Submit + save ----------------------------------------- */
 
-async function submitAnswer(){
+async function submitAnswer() {
   const quiz = currentQuizForIndex(state.i);
   if (!quiz) return;
 
   const userEmail = (el.userEmail?.value || localStorage.getItem('trainingEmail') || '').trim();
   if (!userEmail) return pulse("Enter your email to save.", "warn");
 
-  // If required, block only when the user provided nothing at all.
-  const ans = getUserAnswer(quiz);
-  if (!ans && quiz.required) return pulse("Answer required.", "warn");
+  // Read user's answer (string for MC or string/array for FITB)
+  const ansRaw = getUserAnswer(quiz);
+  if ((ansRaw == null || ansRaw === "" || (Array.isArray(ansRaw) && ansRaw.length === 0)) && quiz.required) {
+    return pulse("Answer required.", "warn");
+  }
 
-  // Determine correctness
-  let isCorrect = true;
-  if (quiz.type === "MC") {
-    isCorrect = ans === quiz.correct;
+  // correctness
+  const type = String(quiz.type || "").toUpperCase();
+  let isCorrect;
+  if (type === "MC") {
+    isCorrect = String(ansRaw ?? "") === String(quiz.correct ?? "");
   } else {
+    // pull correct answers from FITB field
+    const corrFITB = quiz.fitbAnswers ?? "";
     isCorrect = isFitbCorrect(
-      ans,
-      quiz.fitbAnswers,
-      { useRegex: quiz.fitbUseRegex, caseSensitive: quiz.fitbCaseSensitive }
+      ansRaw,
+      corrFITB,
+      { useRegex: !!quiz.fitbUseRegex, caseSensitive: !!quiz.fitbCaseSensitive }
     );
   }
 
-  // Don’t overwrite a previous correct in-memory answer on non-retake runs
-  if (!state.retake) {
-    const prev = state.answers[quiz.questionId];
-    if (!(prev && prev.isCorrect === true)) {
-      state.answers[quiz.questionId] = { answer: ans, isCorrect, at: Date.now() };
-    }
+  // local progress (do not overwrite a past true)
+  const prev = state.answers[quiz.questionId];
+  if (!(prev && prev.isCorrect === true)) {
+    state.answers[quiz.questionId] = { answer: ansRaw, isCorrect, at: Date.now() };
   }
 
-  // Build the authoritative correct-answer string for Airtable
-  const correctAnswerString =
-    quiz.type === "MC"
-      ? String(quiz.correct || "")
-      : (Array.isArray(quiz.fitbAnswers) ? quiz.fitbAnswers.join(" | ") : "");
+  // build the "Correct Answer" string per type
+  const correctAnswerString = (type === "MC")
+    ? String(quiz.correct ?? "")
+    : buildCorrectAnswerDisplay(quiz.fitbAnswers ?? "");
+
+  // store-friendly answer string
+  const answerForStorage = Array.isArray(ansRaw) ? ansRaw.join(" | ") : String(ansRaw ?? "");
 
   try {
     await upsertAnswerRecordWithWrongCount({
       userEmail,
       presentationId: state.presentationId,
       questionId: quiz.questionId,
-      answer: ans,
+      answer: answerForStorage,
       isCorrect,
-      correctAnswer: correctAnswerString
+      correctAnswer: correctAnswerString,
+
+      // meta you asked to save in tblkz5HyZGpgO093S
+      questionText: String(quiz.question || ""),
+      type,
+      timestamp: new Date().toISOString()
     });
+
     pulse(isCorrect ? "Saved ✓" : "Saved (wrong)", isCorrect ? "ok" : "warn");
   } catch (e) {
     console.error(e);
     pulse("Save failed", "bad");
-    // Even if save fails, we still advance so the flow isn't blocked.
   }
 
-  // Advance to next question/slide regardless of correctness
+  // always advance
   if (state.i < state.slides.length - 1) {
     state.i += 1;
     const pageId = state.slides[state.i]?.objectId || "";
@@ -801,11 +935,13 @@ async function submitAnswer(){
   }
 }
 
+if (el.btnSubmit) el.btnSubmit.removeEventListener?.("click", submitAnswer);
 if (el.btnSubmit) el.btnSubmit.addEventListener("click", submitAnswer);
+
 
 /* ------------------ Local progress ---------------------------------------- */
 
-function saveLocalProgress(){
+function saveLocalProgress() {
   const email = (el.userEmail?.value || "").trim();
   if (!email || !state.presentationId) return;
   const answered = Object.keys(state.answers).length;
