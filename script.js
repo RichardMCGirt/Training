@@ -58,16 +58,18 @@ const AIR = {
   API_KEY: "patTGK9HVgF4n1zqK.cbc0a103ecf709818f4cd9a37e18ff5f68c7c17f893085497663b12f2c600054",
   BASE_ID: "app3rkuurlsNa7ZdQ",
 
-  // Questions table (Active questions, filtered by Module)
   QUESTIONS_TABLE_ID: "tblbf2TwwlycoVvQq",
-
-  // Answers table (if you log submissions here; same table ok)
   ANSWERS_TABLE_ID: "tblkz5HyZGpgO093S",
-
-  // NEW: Module → { PresentationId, GasUrl } mapping table
-  // fields: Module (text), PresentationId (text), GasUrl (text)
   MODULES_TABLE_ID: "tblpvVpIJnkWco25E"
 };
+
+/** ⇩⇩⇩ FIELD NAMES YOU CAN CHANGE IF YOUR BASE DIFFERS ⇩⇩⇩ */
+const ANSWER_FIELDS = {
+  RESULT_FIELD: "Result",       // Single select with options: "Right", "Wrong"
+  WRONG_ATTEMPTS_FIELD: "Wrong Attempts",// Number field
+  CORRECT_ANSWER_FIELD: "Correct Answer" // Single line text (or long text)
+};
+/** ⇧⇧⇧ FIELD NAMES YOU CAN CHANGE IF YOUR BASE DIFFERS ⇧⇧⇧ */
 
 function _headers(){
   return { "Authorization": `Bearer ${AIR.API_KEY}`, "Content-Type": "application/json" };
@@ -98,10 +100,8 @@ async function boot(){
   const pidFromUrl = (params.get("presentationId") || "").trim();
   state.presentationId = pidFromUrl;
 
-  // Prepare UI area
   if (el.quizBox) el.quizBox.innerHTML = `<div class="muted">Loading deck for <strong>${esc(state.module)}</strong>…</div>`;
 
-  // If no presentationId provided, look it up from MODULES table by Module
   if (!state.presentationId) {
     try {
       const cfg = await fetchModuleConfigFromAirtable(state.module);
@@ -111,7 +111,6 @@ async function boot(){
       console.warn("[index] module config lookup failed", e);
     }
   } else {
-    // We still might want the GasUrl even if PID came from URL
     try {
       const cfg = await fetchModuleConfigFromAirtable(state.module);
       state.gasUrl = (cfg.gasUrl || "").trim();
@@ -234,6 +233,18 @@ const aBaseUrl = () => baseUrl(AIR.ANSWERS_TABLE_ID);
 function qHeaders(){ return _headers(); }
 function aHeaders(){ return _headers(); }
 
+// ===== Randomization settings (put near your other globals/utils) =====
+const RANDOMIZE_QUESTIONS = true; // toggle if you want to disable shuffling
+
+function shuffleInPlace(a){
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+// ===== Your fetchQuestionsFromAirtable (replace your current version with this) =====
 async function fetchQuestionsFromAirtable(){
   const selectedModule = state.module;
 
@@ -243,7 +254,10 @@ async function fetchQuestionsFromAirtable(){
   url.searchParams.set("sort[0][direction]", "asc");
   if (selectedModule) {
     const esc = s => String(s).replace(/'/g, "\\'");
-    url.searchParams.set("filterByFormula", `AND({Active}=1, LOWER(TRIM({Module}))='${esc(selectedModule.toLowerCase())}')`);
+    url.searchParams.set(
+      "filterByFormula",
+      `AND({Active}=1, LOWER(TRIM({Module}))='${esc(selectedModule.toLowerCase())}')`
+    );
   } else {
     url.searchParams.set("filterByFormula", "AND({Active}=1)");
   }
@@ -265,7 +279,10 @@ async function fetchQuestionsFromAirtable(){
       u.searchParams.set("sort[0][direction]", "asc");
       if (selectedModule) {
         const esc2 = s => String(s).replace(/'/g, "\\'");
-        u.searchParams.set("filterByFormula", `AND({Active}=1, LOWER(TRIM({Module}))='${esc2(selectedModule.toLowerCase())}')`);
+        u.searchParams.set(
+          "filterByFormula",
+          `AND({Active}=1, LOWER(TRIM({Module}))='${esc2(selectedModule.toLowerCase())}')`
+        );
       } else {
         u.searchParams.set("filterByFormula", "AND({Active}=1)");
       }
@@ -275,6 +292,7 @@ async function fetchQuestionsFromAirtable(){
 
   const quizByIndex = {};
   const quizBySlideId = {};
+  const noOrder = []; // optional bucket for records without a valid Order
 
   all.forEach(rec => {
     const f = rec.fields || {};
@@ -289,10 +307,13 @@ async function fetchQuestionsFromAirtable(){
     const fitbRaw = (f["FITB Answers (JSON)"] || "[]");
     let fitbAnswers = [];
     try { fitbAnswers = Array.isArray(fitbRaw) ? fitbRaw : JSON.parse(fitbRaw); } catch {}
+
     const fitbUseRegex = !!f["FITB Use Regex"];
     const fitbCaseSensitive = !!f["FITB Case Sensitive"];
 
-    const type = String(f["Type"] || (options?.length ? "MC" : (fitbAnswers?.length ? "FITB" : "MC"))).toUpperCase();
+    const type = String(
+      f["Type"] || (options?.length ? "MC" : (fitbAnswers?.length ? "FITB" : "MC"))
+    ).toUpperCase();
 
     const q = {
       questionId: f["QuestionId"] || `q_${rec.id}`,
@@ -307,17 +328,51 @@ async function fetchQuestionsFromAirtable(){
     };
 
     const slideId = f["Slide ID"] || "";
-    if (slideId) quizBySlideId[slideId] = q;
+    if (slideId) {
+      // NOTE: if multiple rows share the same Slide ID, the last one will win.
+      // You can switch this to an array if you truly want multiple per slide.
+      quizBySlideId[slideId] = q;
+    }
 
-    if (!Number.isNaN(order)) {
-      const idx = Math.max(0, order - 1);
+    // --- collision-safe placement by Order ---
+    if (!Number.isNaN(order) && order > 0) {
+      let idx = Math.max(0, order - 1);
+      while (quizByIndex[idx]) idx++; // find next free slot if collided
       quizByIndex[idx] = q;
+    } else {
+      // keep track of "missing/invalid order" questions (optional)
+      noOrder.push(q);
     }
   });
+
+  // Append "no-order" questions at the end so they still show (optional)
+  if (noOrder.length) {
+    const start = Math.max(-1, ...Object.keys(quizByIndex).map(k => +k).filter(Number.isFinite)) + 1;
+    for (let i = 0; i < noOrder.length; i++) {
+      let idx = start + i;
+      while (quizByIndex[idx]) idx++;
+      quizByIndex[idx] = noOrder[i];
+    }
+  }
+
+  // Randomize ONLY the index-based sequence (keeps any Slide-ID-tied questions as-is)
+  if (RANDOMIZE_QUESTIONS) {
+    const arr = [];
+    const max = Math.max(-1, ...Object.keys(quizByIndex).map(k => Number(k)).filter(Number.isFinite));
+    for (let i = 0; i <= max; i++) { if (quizByIndex[i]) arr.push(quizByIndex[i]); }
+
+    shuffleInPlace(arr);
+
+    const shuffled = {};
+    for (let i = 0; i < arr.length; i++) shuffled[i] = arr[i];
+    for (const k of Object.keys(quizByIndex)) delete quizByIndex[k];
+    Object.assign(quizByIndex, shuffled);
+  }
 
   state.quizByIndex = quizByIndex;
   state.quizBySlideId = quizBySlideId;
 }
+
 
 /* ========================================================================== */
 /* Thumbnails                                                                 */
@@ -470,16 +525,68 @@ function isFitbCorrect(ans, answers, { useRegex=false, caseSensitive=false }={})
   } catch { return false; }
 }
 
-/* ------------------ Save answers ------------------------------------------ */
+/* ------------------ Save answers (UPSERT with Wrong Attempts) ------------- */
 
-async function upsertAnswerRecordWithWrongCount(baseFields){
-  // simple append (create); adjust to your schema as needed
+async function upsertAnswerRecordWithWrongCount({ userEmail, presentationId, questionId, answer, isCorrect, correctAnswer }){
+  // 1) Look up existing record for this (user, deck, question)
+  const url = new URL(aBaseUrl());
+  const e = s => String(s||"").replace(/'/g, "\\'");
+  url.searchParams.set("filterByFormula", `AND({UserEmail}='${e(userEmail)}',{PresentationId}='${e(presentationId)}',{QuestionId}='${e(questionId)}')`);
+  url.searchParams.set("pageSize", "1");
+
+  const getRes = await fetch(url.toString(), { headers: aHeaders() });
+  if (!getRes.ok) throw new Error(`Lookup failed: ${getRes.status} ${await getRes.text().catch(()=>"(no body)")}`);
+  const data = await getRes.json().catch(()=>({}));
+  const existing = (data.records || [])[0];
+
+  if (existing) {
+    const f = existing.fields || {};
+    const existingIsCorrect = !!f.IsCorrect;
+
+    let wrongAttempts = Number(f[ANSWER_FIELDS.WRONG_ATTEMPTS_FIELD] || 0);
+    // increment Wrong Attempts ONLY when the new submission is wrong
+    if (!isCorrect) wrongAttempts = Number.isFinite(wrongAttempts) ? wrongAttempts + 1 : 1;
+
+    // Single-select label (do not flip a prior "Right" to "Wrong")
+    const resultStr = (existingIsCorrect || isCorrect) ? "Right" : "Wrong";
+
+    const patchFields = {
+      Answer: answer,
+      [ANSWER_FIELDS.CORRECT_ANSWER_FIELD]: correctAnswer,
+      [ANSWER_FIELDS.WRONG_ATTEMPTS_FIELD]: wrongAttempts,
+      IsCorrect: existingIsCorrect ? true : !!isCorrect, // never overwrite true -> false
+      [ANSWER_FIELDS.RESULT_FIELD]: resultStr
+    };
+
+    const patchRes = await fetch(aBaseUrl(), {
+      method: "PATCH",
+      headers: aHeaders(),
+      body: JSON.stringify({ records: [{ id: existing.id, fields: patchFields }], typecast: true })
+    });
+    if (!patchRes.ok) throw new Error(`Update failed: ${patchRes.status} ${await patchRes.text().catch(()=>"(no body)")}`);
+    return existing.id;
+  }
+
+  // No existing record → create new
+  const createFields = {
+    UserEmail: userEmail,
+    PresentationId: presentationId,
+    QuestionId: questionId,
+    Answer: answer,
+    IsCorrect: !!isCorrect,
+    [ANSWER_FIELDS.CORRECT_ANSWER_FIELD]: correctAnswer,
+    [ANSWER_FIELDS.WRONG_ATTEMPTS_FIELD]: (!isCorrect ? 1 : 0),
+    [ANSWER_FIELDS.RESULT_FIELD]: isCorrect ? "Right" : "Wrong"
+  };
+
   const res = await fetch(aBaseUrl(), {
     method: "POST",
     headers: aHeaders(),
-    body: JSON.stringify({ records: [{ fields: baseFields }], typecast: true })
+    body: JSON.stringify({ records: [{ fields: createFields }], typecast: true })
   });
-  if (!res.ok) throw new Error(`Save failed: ${res.status} ${await res.text().catch(()=>"(no body)")}`);
+  if (!res.ok) throw new Error(`Create failed: ${res.status} ${await res.text().catch(()=>"(no body)")}`);
+  const json = await res.json().catch(()=>({}));
+  return json?.records?.[0]?.id || null;
 }
 
 async function loadExistingAnswersForUser(presentationId, userEmail){
@@ -637,16 +744,23 @@ async function submitAnswer(){
   const userEmail = (el.userEmail?.value || localStorage.getItem('trainingEmail') || '').trim();
   if (!userEmail) return pulse("Enter your email to save.", "warn");
 
+  // If required, block only when the user provided nothing at all.
   const ans = getUserAnswer(quiz);
   if (!ans && quiz.required) return pulse("Answer required.", "warn");
 
+  // Determine correctness
   let isCorrect = true;
   if (quiz.type === "MC") {
     isCorrect = ans === quiz.correct;
   } else {
-    isCorrect = isFitbCorrect(ans, quiz.fitbAnswers, { useRegex: quiz.fitbUseRegex, caseSensitive: quiz.fitbCaseSensitive });
+    isCorrect = isFitbCorrect(
+      ans,
+      quiz.fitbAnswers,
+      { useRegex: quiz.fitbUseRegex, caseSensitive: quiz.fitbCaseSensitive }
+    );
   }
 
+  // Don’t overwrite a previous correct in-memory answer on non-retake runs
   if (!state.retake) {
     const prev = state.answers[quiz.questionId];
     if (!(prev && prev.isCorrect === true)) {
@@ -654,21 +768,29 @@ async function submitAnswer(){
     }
   }
 
-  const baseFields = {
-    UserEmail: userEmail,
-    PresentationId: state.presentationId,
-    QuestionId: quiz.questionId,
-    Answer: ans,
-    IsCorrect: !!isCorrect
-  };
+  // Build the authoritative correct-answer string for Airtable
+  const correctAnswerString =
+    quiz.type === "MC"
+      ? String(quiz.correct || "")
+      : (Array.isArray(quiz.fitbAnswers) ? quiz.fitbAnswers.join(" | ") : "");
+
   try {
-    await upsertAnswerRecordWithWrongCount(baseFields);
+    await upsertAnswerRecordWithWrongCount({
+      userEmail,
+      presentationId: state.presentationId,
+      questionId: quiz.questionId,
+      answer: ans,
+      isCorrect,
+      correctAnswer: correctAnswerString
+    });
     pulse(isCorrect ? "Saved ✓" : "Saved (wrong)", isCorrect ? "ok" : "warn");
   } catch (e) {
     console.error(e);
     pulse("Save failed", "bad");
+    // Even if save fails, we still advance so the flow isn't blocked.
   }
 
+  // Advance to next question/slide regardless of correctness
   if (state.i < state.slides.length - 1) {
     state.i += 1;
     const pageId = state.slides[state.i]?.objectId || "";
@@ -678,6 +800,7 @@ async function submitAnswer(){
     if (el.retryRow) el.retryRow.style.display = "flex";
   }
 }
+
 if (el.btnSubmit) el.btnSubmit.addEventListener("click", submitAnswer);
 
 /* ------------------ Local progress ---------------------------------------- */

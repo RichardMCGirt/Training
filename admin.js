@@ -31,6 +31,16 @@ function qHeaders(){
 // ========= Tiny DOM Helpers =========
 const $  = sel => document.querySelector(sel);
 const $$ = sel => Array.from(document.querySelectorAll(sel));
+// ===== Randomization settings =====
+const RANDOMIZE_QUESTIONS = true; // toggle on/off
+
+function shuffleInPlace(a){
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
 
 // ========= UI Map =========
 const ui = {
@@ -279,7 +289,19 @@ function genQuestionId(prefix="q"){ return `${prefix}_${Math.random().toString(3
 function readForm(){
   const type = (ui.questionType?.value || "MC").toUpperCase();
   const slide = (ui.slideId?.value || "").trim();
-  const order = Number(ui.order?.value || 0);
+let order = Number(ui.order?.value || NaN);
+if (!Number.isFinite(order) || order <= 0) {
+  // compute next order within the chosen module from the in-memory rows
+  const mod = (ui.moduleSelect?.value === "__ADD_NEW__" ? ui.moduleInput?.value : ui.moduleSelect?.value) || "";
+  const maxInModule = Math.max(
+    0,
+    ...state.rows
+      .filter(r => String(r.fields?.Module || "") === String(mod))
+      .map(r => Number(r.fields?.Order))
+      .filter(n => Number.isFinite(n))
+  );
+  order = maxInModule + 1;
+}
   const qid = (ui.questionId?.value || "").trim() || genQuestionId("q");
   const qtext = (ui.questionText?.value || "").trim();
 
@@ -1377,4 +1399,128 @@ function readQuestionFormFromDOM(){
       status && (status.textContent = e.message || 'Save failed');
     }
   });
+})();
+// ===== Normalize Orders (Admin utilities) =====
+async function normalizeAllOrdersByModule({ dryRun = false } = {}) {
+  const moduleField = "Module";
+  const orderField  = "Order";
+
+  // 1) Pull every question row from the Questions table
+  const all = [];
+  let offset;
+  do {
+    const data = await listAll({ tableId: AIRTABLE.TABLE_ID, pageSize: 100, offset, sortField: orderField, sortDir: "asc" });
+    (data.records || []).forEach(r => all.push(r));
+    offset = data.offset;
+  } while (offset);
+
+  // 2) Group rows by Module
+  const groups = new Map();
+  for (const r of all) {
+    const f = r.fields || {};
+    const mod = String(f[moduleField] || "").trim();
+    if (!groups.has(mod)) groups.set(mod, []);
+    groups.get(mod).push(r);
+  }
+
+  // 3) For each module, sort and assign 1..N
+  const updates = [];
+  for (const [mod, items] of groups.entries()) {
+    items.sort((a, b) => {
+      const ao = Number(a.fields?.[orderField]); const bo = Number(b.fields?.[orderField]);
+      const an = Number.isFinite(ao) ? ao : Number.POSITIVE_INFINITY;
+      const bn = Number.isFinite(bo) ? bo : Number.POSITIVE_INFINITY;
+      // tiebreaker: by Question text to keep stable
+      if (an !== bn) return an - bn;
+      const aq = String(a.fields?.Question || "");
+      const bq = String(b.fields?.Question || "");
+      return aq.localeCompare(bq);
+    });
+
+    let n = 1;
+    for (const r of items) {
+      const cur = Number(r.fields?.[orderField]);
+      if (cur !== n) { updates.push({ id: r.id, fields: { [orderField]: n } }); }
+      n++;
+    }
+  }
+
+  if (!updates.length) return { changed: 0, modules: groups.size };
+  if (!dryRun) await batchPatch(AIRTABLE.TABLE_ID, updates);
+  return { changed: updates.length, modules: groups.size };
+}
+
+async function normalizeOrdersForModule(moduleName, { dryRun = false } = {}) {
+  const moduleField = "Module";
+  const orderField  = "Order";
+
+  if (!moduleName) return { changed: 0, module: "" };
+
+  // Fetch only this module
+  const esc = s => String(s || "").replace(/'/g, "\\'");
+  const data = await listAll({
+    tableId: AIRTABLE.TABLE_ID,
+    pageSize: 100,
+    sortField: orderField,
+    sortDir: "asc",
+    filterByFormula: `LOWER(TRIM({${moduleField}}))='${esc(moduleName.toLowerCase())}'`
+  });
+  const items = (data.records || []).slice();
+
+  items.sort((a, b) => {
+    const ao = Number(a.fields?.[orderField]); const bo = Number(b.fields?.[orderField]);
+    const an = Number.isFinite(ao) ? ao : Number.POSITIVE_INFINITY;
+    const bn = Number.isFinite(bo) ? bo : Number.POSITIVE_INFINITY;
+    if (an !== bn) return an - bn;
+    const aq = String(a.fields?.Question || "");
+    const bq = String(b.fields?.Question || "");
+    return aq.localeCompare(bq);
+  });
+
+  const updates = [];
+  let n = 1;
+  for (const r of items) {
+    const cur = Number(r.fields?.[orderField]);
+    if (cur !== n) updates.push({ id: r.id, fields: { [orderField]: n } });
+    n++;
+  }
+
+  if (!updates.length) return { changed: 0, module: moduleName };
+  if (!dryRun) await batchPatch(AIRTABLE.TABLE_ID, updates);
+  return { changed: updates.length, module: moduleName };
+}
+// ===== Wire up Normalize buttons =====
+(function wireNormalizeButtons(){
+  const btnAll = document.getElementById("btnNormalizeAll");
+  const btnOne = document.getElementById("btnNormalizeForModule");
+  const status = document.getElementById("normalizeStatus");
+
+  async function run(fn, label) {
+    try {
+      if (status) status.textContent = `${label}…`;
+      const res = await fn();
+      toast(`${label} done (${res.changed} updated)`, "ok");
+      if (status) status.textContent = `${label} done (${res.changed})`;
+      await refreshList(); // refresh UI
+    } catch (e) {
+      console.error(e);
+      toast(e.message || `${label} failed`, "bad");
+      if (status) status.textContent = "Error";
+    }
+  }
+
+  if (btnAll) {
+    btnAll.addEventListener("click", () => {
+      run(() => normalizeAllOrdersByModule({ dryRun: false }), "Normalize all");
+    });
+  }
+  if (btnOne) {
+    btnOne.addEventListener("click", () => {
+      const sel = document.getElementById("moduleSelect");
+      const typed = (document.getElementById("moduleInput")?.value || "").trim();
+      const value = sel && sel.value !== "__ADD_NEW__" ? (sel.value || "") : typed;
+      if (!value) return toast("Pick or type a module first.", "bad");
+      run(() => normalizeOrdersForModule(value, { dryRun: false }), `Normalize "${value}"`);
+    });
+  }
 })();

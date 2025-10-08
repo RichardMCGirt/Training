@@ -4,31 +4,7 @@
   <meta charset="utf-8">
   <title>Slides Training – Deck + Airtable Quiz</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-
   <link rel="stylesheet" href="index.css">
-  <style>
-    /* minimal styles for the new thumbnail strip */
-    #thumbStrip {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-      gap: 8px;
-      margin-top: 12px;
-      align-items: start;
-    }
-    .thumb {
-      border: 2px solid transparent;
-      border-radius: 6px;
-      overflow: hidden;
-      background: #fafafa;
-      cursor: pointer;
-      transition: transform .06s ease, border-color .06s ease, box-shadow .06s ease;
-    }
-    .thumb:hover { transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0,0,0,.08); }
-    .thumb.active { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37,99,235,.15) inset; }
-    .thumb img { display: block; width: 100%; height: auto; }
-    .thumb .cap { padding: 6px 8px; font-size: 12px; color: #555; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: #fff; }
-    .muted.small.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
-  </style>
 </head>
 <body>
   <div class="wrap">
@@ -57,8 +33,6 @@
             <div id="bar"><i id="barInner"></i></div>
           </div>
 
-          <!-- NEW: live Google Slides thumbnails -->
-          <div id="thumbStrip" aria-label="Slide thumbnails"></div>
         </div>
       </section>
 
