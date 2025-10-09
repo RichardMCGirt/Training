@@ -198,10 +198,6 @@ async function tryFetchSlidesFromGAS(presentationId){
   }
 }
 
-/* ========================================================================== */
-/* Airtable config                                                            */
-/* ========================================================================== */
-
 const AIR = {
   API_KEY: "patTGK9HVgF4n1zqK.cbc0a103ecf709818f4cd9a37e18ff5f68c7c17f893085497663b12f2c600054",
   BASE_ID: "app3rkuurlsNa7ZdQ",
@@ -224,12 +220,9 @@ const ANSWER_FIELDS = {
   COMPLETED_COUNT_FIELD: "Completed Count" // Number: total distinct correct for this user+deck
 }
 
-// ===== Randomization settings (put near your other globals/utils) =====
 const RANDOMIZE_QUESTIONS = false;
 
-/* ========================================================================== */
-/* Slides embed + thumbnails                                                  */
-/* ========================================================================== */
+
 
 function showEmbed(presentationId, pageObjectId){
   if (!el.slidesEmbed) return;
@@ -649,6 +642,28 @@ window.addEventListener("keydown", (e) => {
 });
 
 /* ------------------ Submit + save ----------------------------------------- */
+async function recalcAndDisplayProgress({ updateAirtable = false } = {}){
+  try{
+    ensureProgressBannerElement();
+    const txt = document.getElementById("moduleProgressText");
+    const bar = document.getElementById("moduleProgressBar");
+    const userEmail = getUserEmail();
+    const total = getQuestionCount();
+
+    const completed = await countDistinctAnsweredForUserPresentation(state.presentationId, userEmail);
+
+    const pct = total ? Math.round((Math.min(completed,total) * 100)/total) : 0;
+    if (txt) txt.textContent = `You have completed ${completed} of ${total} questions (${pct}%).`;
+    if (bar) { bar.style.width = pct + "%"; }
+
+    if (updateAirtable){
+      try { await updateCompletedCountForUserPresentation(userEmail, state.presentationId, completed); }
+      catch(e){ console.warn("Completed Count sync failed", e); }
+    }
+  } catch(e){
+    console.warn("Progress banner update failed", e);
+  }
+}
 
 async function submitAnswer() {
   const quiz = currentQuizForIndex(state.i);
@@ -765,30 +780,6 @@ async function countDistinctAnsweredForUserPresentation(presentationId, userEmai
   } while(offset);
   return seen.size;
 }
-
-async function recalcAndDisplayProgress({ updateAirtable = false } = {}){
-  try{
-    ensureProgressBannerElement();
-    const txt = document.getElementById("moduleProgressText");
-    const bar = document.getElementById("moduleProgressBar");
-    const userEmail = getUserEmail();
-    const total = getQuestionCount();
-
-    const completed = await countDistinctAnsweredForUserPresentation(state.presentationId, userEmail);
-
-    const pct = total ? Math.round((Math.min(completed,total) * 100)/total) : 0;
-    if (txt) txt.textContent = `You have completed ${completed} of ${total} questions (${pct}%).`;
-    if (bar) { bar.style.width = pct + "%"; }
-
-    if (updateAirtable){
-      try { await updateCompletedCountForUserPresentation(userEmail, state.presentationId, completed); }
-      catch(e){ console.warn("Completed Count sync failed", e); }
-    }
-  } catch(e){
-    console.warn("Progress banner update failed", e);
-  }
-}
-
 
 function buildCorrectAnswerDisplay(fitbAnswers){
   try {
@@ -934,22 +925,21 @@ async function initQuizAttempt() {
     return 1;
   }
 
-  // Try to restore previous attempt for this user+deck
   const key = `attempt:${userEmail}:${state.presentationId}`;
+
   const stored = Number(localStorage.getItem(key) || 0);
   if (stored) {
     state.currentAttempt = stored;
     return stored;
   }
 
-  // Otherwise allocate a new one and remember it
-  const next = await getNextAttemptNumber(userEmail, state.presentationId);
-  state.currentAttempt = next;
-  localStorage.setItem(key, String(next));
-  return next;
+  const next = await getNextAttemptNumber(userEmail, state.presentationId); // max + 1
+  const latest = Math.max(1, next - 1); // ← use the latest existing attempt (or 1 if none)
+
+  state.currentAttempt = latest;
+  localStorage.setItem(key, String(latest));
+  return latest;
 }
-
-
 
 
 function nextUnansweredIndex(){
@@ -1044,12 +1034,18 @@ async function countDistinctCorrectForUserPresentation(presentationId, userEmail
 
 async function updateCompletedCountForUserPresentation(userEmail, presentationId, completedCount){
   if (!userEmail || !presentationId) return;
-  // fetch all records for this user+deck (we'll PATCH the Completed Count field)
+  const attempt = Number(state.currentAttempt || 1);
+
+  // fetch only records for this user+deck+attempt
   const allIds = [];
   const url = new URL(aBaseUrl());
   const e = s => String(s||"").replace(/'/g, "\\'");
-  url.searchParams.set("filterByFormula", `AND({UserEmail}='${e(userEmail)}',{PresentationId}='${e(presentationId)}')`);
+  url.searchParams.set(
+    "filterByFormula",
+    `AND({UserEmail}='${e(userEmail)}',{PresentationId}='${e(presentationId)}',{Attempt}=${attempt})`
+  );
   url.searchParams.set("pageSize","100");
+
   let offset;
   do{
     if (offset) url.searchParams.set("offset", offset);
@@ -1062,7 +1058,10 @@ async function updateCompletedCountForUserPresentation(userEmail, presentationId
     offset = data.offset;
     if (offset){
       const u = new URL(aBaseUrl());
-      u.searchParams.set("filterByFormula", `AND({UserEmail}='${e(userEmail)}',{PresentationId}='${e(presentationId)}')`);
+      u.searchParams.set(
+        "filterByFormula",
+        `AND({UserEmail}='${e(userEmail)}',{PresentationId}='${e(presentationId)}',{Attempt}=${attempt})`
+      );
       u.searchParams.set("pageSize","100");
       url.search = u.search;
     }
@@ -1087,6 +1086,7 @@ async function updateCompletedCountForUserPresentation(userEmail, presentationId
     }
   }
 }
+
 
 /* ------------------ Ensure slide list at least covers questions ----------- */
 
