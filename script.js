@@ -548,7 +548,7 @@ function isFitbCorrect(userAnswer, correctAnswers, opts = {}) {
 
   if (userArr.length === correctArr.length) {
     return userArr.every((u, i) => norm(u) === norm(correctArr[i]));
-  } else {
+  } else {ubmi
     // “bag” membership
     return userArr.every(u => corrSet.has(norm(u)));
   }
@@ -731,9 +731,64 @@ async function submitAnswer() {
 }
 
 if (el.btnSubmit) el.btnSubmit.removeEventListener?.("click", submitAnswer);
-if (el.btnSubmit) el.btnSubmit.addEventListener?.("click", submitAnswer);
 
 /* ------------------ Answer persistence (UPSERT) --------------------------- */
+// Count distinct *answered* QuestionIds (any correctness) for this user+deck
+async function countDistinctAnsweredForUserPresentation(presentationId, userEmail){
+  if (!userEmail || !presentationId) return 0;
+  const url = new URL(aBaseUrl());
+  const e = s => String(s||"").replace(/'/g, "\\'");
+  url.searchParams.set("filterByFormula",
+    `AND({UserEmail}='${e(userEmail)}',{PresentationId}='${e(presentationId)}')`
+  );
+  url.searchParams.set("pageSize","100");
+
+  const seen = new Set();
+  let offset;
+  do{
+    if (offset) url.searchParams.set("offset", offset);
+    const res = await fetch(url.toString(), { headers: aHeaders() });
+    if (!res.ok) throw new Error(`Answers (any) fetch failed: ${res.status}`);
+    const data = await res.json();
+    for (const r of (data.records||[])){
+      const qid = String(r?.fields?.QuestionId||"").trim();
+      if (qid) seen.add(qid);
+    }
+    offset = data.offset;
+    if (offset){
+      const u = new URL(aBaseUrl());
+      u.searchParams.set("filterByFormula",
+        `AND({UserEmail}='${e(userEmail)}',{PresentationId}='${e(presentationId)}')`
+      );
+      u.searchParams.set("pageSize","100");
+      url.search = u.search;
+    }
+  } while(offset);
+  return seen.size;
+}
+async function recalcAndDisplayProgress({ updateAirtable = false } = {}){
+  try{
+    ensureProgressBannerElement();
+    const txt = document.getElementById("moduleProgressText");
+    const bar = document.getElementById("moduleProgressBar");
+    const userEmail = (el.userEmail?.value || localStorage.getItem("trainingEmail") || "").trim();
+    const total = getQuestionCount();
+
+    // use answered-any instead of correct-only
+    const completed = await countDistinctAnsweredForUserPresentation(state.presentationId, userEmail);
+
+    const pct = total ? Math.round((Math.min(completed,total) * 100)/total) : 0;
+    if (txt) txt.textContent = `You have completed ${completed} of ${total} questions (${pct}%).`;
+    if (bar) { bar.style.width = pct + "%"; bar.style.background = "#3b82f6"; }
+
+    if (updateAirtable){
+      try { await updateCompletedCountForUserPresentation(userEmail, state.presentationId, completed); }
+      catch(e){ console.warn("Completed Count sync failed", e); }
+    }
+  } catch(e){
+    console.warn("Progress banner update failed", e);
+  }
+}
 
 function buildCorrectAnswerDisplay(fitbAnswers){
   try {
@@ -874,9 +929,10 @@ function nextUnansweredIndex(){
 
 function getQuestionCount(){
   const idxs = Object.keys(state.quizByIndex).map(k => parseInt(k, 10)).filter(n => !Number.isNaN(n));
-  const byIndexCount = idxs.length ? (Math.max(...idxs) + 1) : 0;
+  const byIndexCount = idxs.length ? (Math.max(...idxs) + 1) : 0; // <-- fix spread
   return Math.max(byIndexCount, 0);
 }
+
 
 /* ------------------ Progress banner + Completed Count syncing ------------- */
 

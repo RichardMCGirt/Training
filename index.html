@@ -52,9 +52,6 @@
     </div>
   </div>
 
-  <!-- auto loader sets window.GAS_ENDPOINT + auto-fills the Slides ID -->
-  <script src="./auto-load.js"></script>
-
   <script>
     // Pre-fill from query + localStorage
     (function(){
@@ -72,7 +69,7 @@
           const key = `progress:${email}:${pid}`;
           localStorage.removeItem(key);
         }
-        window.addEventListener('DOMContentLoaded', () => onLoadDeckClick());
+    //    window.addEventListener('DOMContentLoaded', () => onLoadDeckClick());
       }
       // keep email in localStorage
       inputE.addEventListener('input', () => localStorage.setItem('trainingEmail', inputE.value.trim()));
