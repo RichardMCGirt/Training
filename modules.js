@@ -79,11 +79,19 @@ const norm = s => String(s||"").toLowerCase().trim();
 }
 
   // ========= Get one config (first match) by Module =========
-  async function getConfigForModule(moduleName){
-    if (!moduleName) return { presentationId:"", gasUrl:"", active:false };
-    const url = new URL(baseUrl(AIRTABLE.MODULES_TABLE_ID));
-    url.searchParams.set("filterByFormula", `LOWER({Module})='${escSquotes(moduleName).toLowerCase()}'`);
-    url.searchParams.set("pageSize","1");
+ function getConfigForModule(moduleName){
+  if (!moduleName) return { presentationId:"", gasUrl:"", active:false };
+  const url = new URL(baseUrl(AIRTABLE.MODULES_TABLE_ID));
+
+  // safer match: case-insensitive + trimmed, and only active rows
+  const mod = escSquotes(String(moduleName||""));
+  url.searchParams.set(
+    "filterByFormula",
+    `AND({Active}=1, LOWER(TRIM({Module}))='${mod.toLowerCase().trim()}')`
+  );
+  url.searchParams.set("pageSize","1");
+
+  return (async () => {
     const res = await fetch(url.toString(), { headers: headers() });
     if (!res.ok) throw new Error("Lookup failed: "+res.status+" "+await res.text());
     const data = await res.json();
@@ -91,11 +99,13 @@ const norm = s => String(s||"").toLowerCase().trim();
     const f = rec?.fields || {};
     return {
       id: rec?.id || "",
-      presentationId: String(f["Presentation ID"]||"").trim(),
-      gasUrl: String(f["GAS URL"]||"").trim(),
+      presentationId: String(f["PresentationId"]||"").trim(),
+      gasUrl: String(f["GAS"]||f["GASURL"]||"").trim(),
       active: !!f["Active"]
     };
-  }
+  })();
+}
+
 
   // ========= UPSERT ALL: Patch every record where Module matches; create if none =========
   async function upsertMappingAll({ moduleName, presentationId, gasUrl, active=true }){

@@ -1,8 +1,8 @@
 /* ===========================
-   Training Dashboard (Launcher)
+   Training Dashboard (Launcher) — with per-module stats
    - Lists modules user can access
+   - Shows total questions and % completed for the signed-in user
    - On click → index.html?module=...&presentationId=...
-   - No answer counting / no 422s
    =========================== */
 
 // Toggle verbose console logging
@@ -55,13 +55,15 @@ async function _fetch(url, options = {}, tag = "fetch"){
    Airtable config
    - Questions table: modules + Active flag
    - Titles table: "Assigned Modules Mapping" (strings like "role: module")
+   - Answers table: per-user answers (IsCorrect, QuestionId, PresentationId)
    =========================== */
 const AIR = {
   API_KEY: "patTGK9HVgF4n1zqK.cbc0a103ecf709818f4cd9a37e18ff5f68c7c17f893085497663b12f2c600054",
   BASE_ID: "app3rkuurlsNa7ZdQ",
   Q_TABLE: "tblbf2TwwlycoVvQq",                // Questions (has {Module} + {Active})
   T_TABLE: "tblppx6qNXXNJL7ON",                // Titles / Users table
-  T_FIELD: "Assigned Modules Mapping"          // Field with strings that include module names
+  T_FIELD: "Assigned Modules Mapping",         // Field with strings that include module names
+  A_TABLE: "tblkz5HyZGpgO093S"                 // Answers (UserEmail, PresentationId, QuestionId, IsCorrect)
 };
 
 function h() {
@@ -73,7 +75,7 @@ function h() {
 const baseUrl = (t) => `https://api.airtable.com/v0/${AIR.BASE_ID}/${encodeURIComponent(t)}`;
 
 /* ===========================
-   Data loaders
+   Data loaders (existing)
    =========================== */
 
 // Collect distinct active modules from Questions
@@ -117,10 +119,6 @@ async function fetchDistinctModules(){
   }
 
   LOGGER.info("[summary] modules found", { moduleCount: byModule.size, totalRecords: all.length });
-  if (window.DEBUG) {
-    const preview = Array.from(byModule.values()).slice(0, 10).map(v => ({ module: v.name }));
-    console.table(preview);
-  }
   LOGGER.groupEnd();
   return byModule; // Map(moduleName -> {name})
 }
@@ -174,10 +172,8 @@ async function fetchAssignedModuleMappingStrings(){
           if (s) bucket.push(s);
         }
       } else if (typeof raw === 'string') {
-        // Split on comma/semicolon/newline; also keep the full string if it contains colon-delimited role: module
         const parts = raw.split(/[,;\n]/g).map(s => s.trim()).filter(Boolean);
         if (parts.length) bucket.push(...parts);
-        // Additionally push raw as-is if unique (covers "role: module" patterns)
         if (raw.trim() && !parts.includes(raw.trim())) bucket.push(raw.trim());
       }
       // ignore other types
@@ -193,11 +189,108 @@ async function fetchAssignedModuleMappingStrings(){
 
   const lower = bucket.map(s => s.toLowerCase());
   LOGGER.info("[summary] rawCount:", bucket.length, "lowercasedCount:", lower.length);
-  if (window.DEBUG) {
-    console.table(lower.slice(0, 30).map((s, i)=>({i, value:s})));
-  }
   LOGGER.groupEnd();
   return lower;
+}
+
+/* ===========================
+   New helpers for stats
+   =========================== */
+
+// Count ACTIVE questions for module
+async function countActiveQuestions(moduleName){
+  const url = new URL(baseUrl(AIR.Q_TABLE));
+  const esc = (s) => String(s||"").replace(/'/g, "\\'");
+  url.searchParams.set('pageSize','100');
+  url.searchParams.set('filterByFormula', `AND({Active}=1, LOWER(TRIM({Module}))='${esc(moduleName.toLowerCase())}')`);
+
+  let count = 0, offset;
+  do {
+    if (offset) url.searchParams.set('offset', offset);
+    const res = await _fetch(url.toString(), { headers: h() }, "q-count");
+    if (!res.ok) throw new Error("Questions count failed: "+res.status);
+    const data = await res.json();
+    count += (data.records||[]).length;
+    offset = data.offset;
+
+    if (offset){
+      const u = new URL(baseUrl(AIR.Q_TABLE));
+      u.searchParams.set('pageSize','100');
+      u.searchParams.set('filterByFormula', `AND({Active}=1, LOWER(TRIM({Module}))='${esc(moduleName.toLowerCase())}')`);
+      url.search = u.search;
+    }
+  } while (offset);
+
+  return count;
+}
+
+// Get Slides Presentation ID for module (via modules.js helper)
+async function getPresentationIdForModule(moduleName){
+  try{
+    if (window.trainingModules?.getConfigForModule){
+      const cfg = await window.trainingModules.getConfigForModule(moduleName);
+      return (cfg?.presentationId || "").trim();
+    }
+  } catch(e){ LOGGER.warn("[getPresentationIdForModule] failed", e); }
+  return "";
+}
+
+// Count distinct correct QuestionIds for user & presentation
+async function countCorrectForUser(presentationId, userEmail){
+  if (!presentationId || !userEmail) return 0;
+
+  const url = new URL(baseUrl(AIR.A_TABLE));
+  const esc = (s) => String(s||"").replace(/'/g, "\\'");
+  url.searchParams.set('pageSize','100');
+  // Match the fields saved by the quiz flow: UserEmail, PresentationId, IsCorrect
+  url.searchParams.set('filterByFormula', `AND({UserEmail}='${esc(userEmail)}',{PresentationId}='${esc(presentationId)}',{IsCorrect}=1)`);
+
+  const seen = new Set();
+  let offset;
+  do {
+    if (offset) url.searchParams.set('offset', offset);
+    const res = await _fetch(url.toString(), { headers: h() }, "a-count");
+    if (!res.ok) throw new Error("Answers load failed: "+res.status);
+    const data = await res.json();
+    for (const r of (data.records||[])) {
+      const qid = String(r?.fields?.QuestionId || "").trim();
+      if (qid) seen.add(qid);
+    }
+    offset = data.offset;
+
+    if (offset){
+      const u = new URL(baseUrl(AIR.A_TABLE));
+      u.searchParams.set('pageSize','100');
+      u.searchParams.set('filterByFormula', `AND({UserEmail}='${esc(userEmail)}',{PresentationId}='${esc(presentationId)}',{IsCorrect}=1)`);
+      url.search = u.search;
+    }
+  } while (offset);
+
+  return seen.size;
+}
+
+// Bundle stats for a module
+async function fetchModuleStats(moduleName, userEmail){
+  const [total, presId] = await Promise.all([
+    countActiveQuestions(moduleName),
+    getPresentationIdForModule(moduleName)
+  ]);
+
+  let correct = 0;
+  try {
+    correct = await countCorrectForUser(presId, userEmail);
+  } catch (e){
+    LOGGER.warn("[fetchModuleStats] correct-count failed", e);
+  }
+
+  const pct = total > 0 ? Math.round((Math.min(correct, total) * 100) / total) : 0;
+
+  return {
+    totalQuestions: total,
+    correct,
+    pct,
+    presentationId: presId
+  };
 }
 
 /* ===========================
@@ -265,8 +358,8 @@ async function render(){
   try {
     // Load distinct modules & title mappings
     const [byModule, mappingStrings] = await Promise.all([
-      fetchDistinctModules(),            // Map(name -> {name})
-      fetchAssignedModuleMappingStrings()// Array<string> (lowercased)
+      fetchDistinctModules(),             // Map(name -> {name})
+      fetchAssignedModuleMappingStrings() // Array<string> (lowercased)
     ]);
 
     const search = (document.getElementById('search')?.value||'').trim().toLowerCase();
@@ -289,14 +382,64 @@ async function render(){
       return;
     }
 
-    const cards = arr.map(m => {
-      // Simple card without answer stats (launcher-only)
-      return `<div class="card" data-module="${m.name}">
-        <div class="hd">${m.name}</div>
+    // Who's the user? (same storage used by deck page)
+    const userEmail = (localStorage.getItem('trainingEmail') || localStorage.getItem('authEmail') || '').trim();
+
+    // Concurrency-limited mapper (preserves order)
+    async function mapWithLimit(items, limit, fn){
+      const out = new Array(items.length);
+      let next = 0;
+      const cap = Math.max(1, Math.min(Number(limit)||1, items.length));
+      async function worker(){
+        while (true){
+          const i = next++;
+          if (i >= items.length) break;
+          out[i] = await fn(items[i], i, items);
+        }
+      }
+      await Promise.all(Array.from({ length: cap }, worker));
+      return out;
+    }
+
+    // Compute stats per module (total, correct, pct, presentationId)
+    const stats = await mapWithLimit(arr, 4, async (m) => {
+      try {
+        const s = await fetchModuleStats(m.name, userEmail);
+        return { name: m.name, ...s };
+      } catch (e){
+        LOGGER.warn("[stats] failed for", m.name, e);
+        return { name: m.name, totalQuestions: 0, correct: 0, pct: 0, presentationId: "" };
+      }
+    });
+
+    // Build cards with progress bar + % completed
+    const cards = stats.map(s => {
+      const totalTxt = `${s.totalQuestions} question${s.totalQuestions===1?"":"s"}`;
+      const canShowPct = (s.totalQuestions > 0 && s.presentationId && userEmail);
+      const pctVal = Number(s.pct || 0);
+      const pctTxt = canShowPct
+        ? `${pctVal}% completed`
+        : (s.totalQuestions > 0 ? "—" : "0% completed");
+
+      const bar = `
+        <div style="margin-top:8px">
+          <div style="height:8px;background:#eee;border-radius:6px;overflow:hidden">
+            <i style="display:block;height:8px;width:${pctVal}%;background:#3b82f6"></i>
+          </div>
+          <div class="muted small" style="margin-top:4px">${pctTxt}</div>
+        </div>`;
+
+      // safer inline escaping
+      const modEsc = JSON.stringify(s.name);
+
+      return `<div class="card" data-module=${modEsc}>
+        <div class="hd">${s.name}</div>
         <div class="bd">
-          <div class="row" style="margin-top:6px">
-            <button class="btn" onclick="openModule('${m.name.replace(/'/g, "\\'")}')">Open</button>
-            <button class="btn btn-ghost" onclick="openModule('${m.name.replace(/'/g, "\\'")}', { reset:true })" style="margin-left:8px">Restart</button>
+          <div class="muted">${totalTxt}</div>
+          ${bar}
+          <div class="row" style="margin-top:10px">
+            <button class="btn" onclick="openModule(${modEsc})">Open</button>
+            <button class="btn btn-ghost" onclick="openModule(${modEsc}, { reset:true })" style="margin-left:8px">Restart</button>
           </div>
         </div>
       </div>`;
@@ -312,6 +455,7 @@ async function render(){
     LOGGER.groupEnd();
   }
 }
+
 
 /* ===========================
    Wire up
