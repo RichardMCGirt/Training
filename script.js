@@ -1,10 +1,6 @@
 /* eslint-disable no-console */
 "use strict";
 
-/* ========================================================================== */
-/* Elements + State                                                           */
-/* ========================================================================== */
-
 const el = {
   presentationIdInput: document.getElementById("presentationId"),
   slidesEmbed: document.getElementById("slidesEmbed"),
@@ -201,19 +197,15 @@ async function tryFetchSlidesFromGAS(presentationId){
 const AIR = {
   API_KEY: "patTGK9HVgF4n1zqK.cbc0a103ecf709818f4cd9a37e18ff5f68c7c17f893085497663b12f2c600054",
   BASE_ID: "app3rkuurlsNa7ZdQ",
-
   QUESTIONS_TABLE_ID: "tblbf2TwwlycoVvQq",
   ANSWERS_TABLE_ID: "tblkz5HyZGpgO093S",
   MODULES_TABLE_ID: "tblpvVpIJnkWco25E"
 };
 
-/** ⇩⇩⇩ FIELD NAMES YOU CAN CHANGE IF YOUR BASE DIFFERS ⇩⇩⇩ */
-/** ⇩⇩⇩ FIELD NAMES YOU CAN CHANGE IF YOUR BASE DIFFERS ⇩⇩⇩ */
 const ANSWER_FIELDS = {
   RESULT_FIELD: "Result",                 // Single select: "Right" | "Wrong"
   WRONG_ATTEMPTS_FIELD: "Wrong Attempts", // Number
   CORRECT_ANSWER_FIELD: "Correct Answer", // Text
-
   TIMESTAMP_FIELD: "Timestamp",           // Date with time
   QUESTION_FIELD: "Question",             // Text (single/long)
   TYPE_FIELD: "Type",                     // Single select or text ("MC" | "FITB"),
@@ -221,9 +213,10 @@ const ANSWER_FIELDS = {
 }
 
 const RANDOMIZE_QUESTIONS = false;
-
-
-
+AIRTABLE.ANSWERS_TABLE_ID = 'tblkz5HyZGpgO093S';
+function aBaseUrl(){
+  return `https://api.airtable.com/v0/${AIRTABLE.BASE_ID}/${AIRTABLE.ANSWERS_TABLE_ID}`;
+}
 function showEmbed(presentationId, pageObjectId){
   if (!el.slidesEmbed) return;
   const base = `https://docs.google.com/presentation/d/${encodeURIComponent(presentationId)}/embed`;
@@ -517,7 +510,6 @@ function getUserAnswer(quiz){
   }
 }
 
-
 function isFitbCorrect(userAnswer, correctAnswers, opts = {}) {
   const { useRegex = false, caseSensitive = false } = opts;
   const userArr = toStrArray(userAnswer);
@@ -543,7 +535,6 @@ function isFitbCorrect(userAnswer, correctAnswers, opts = {}) {
   }
 }
 
-
 function toStrArray(v){
   if (Array.isArray(v)) return v.map(x => String(x ?? ""));
   if (typeof v === "string") {
@@ -558,8 +549,6 @@ function toStrArray(v){
   }
   return [String(v ?? "")];
 }
-
-/* ------------------ Save answers (UPSERT with Wrong Attempts) ------------- */
 
 async function onDeckLoaded(presentationId, slidesArray){
   state.presentationId = presentationId;
@@ -651,14 +640,23 @@ async function recalcAndDisplayProgress({ updateAirtable = false } = {}){
     const total = getQuestionCount();
 
     const completed = await countDistinctAnsweredForUserPresentation(state.presentationId, userEmail);
-
+    const correct   = await countDistinctCorrectForUserPresentation(state.presentationId, userEmail);
     const pct = total ? Math.round((Math.min(completed,total) * 100)/total) : 0;
+
     if (txt) txt.textContent = `You have completed ${completed} of ${total} questions (${pct}%).`;
     if (bar) { bar.style.width = pct + "%"; }
 
     if (updateAirtable){
-      try { await updateCompletedCountForUserPresentation(userEmail, state.presentationId, completed); }
-      catch(e){ console.warn("Completed Count sync failed", e); }
+      try {
+        await updateAttemptSummaryOnAnswersTable({
+          userEmail,
+          presentationId: state.presentationId,
+          attempt: Number(state.currentAttempt || 1),
+          completedCount: completed,
+          correctCount: correct,
+          total
+        });
+      } catch(e){ console.warn("Attempt summary sync failed", e); }
     }
   } catch(e){
     console.warn("Progress banner update failed", e);
@@ -672,19 +670,26 @@ async function submitAnswer() {
   const userEmail = getUserEmail();
   if (!userEmail) return pulse("Enter your email to save.", "warn");
 
-  // Read user's answer (string for MC or string/array for FITB)
+  // Resolve a stable QuestionId (works whether your quiz object uses questionId or id)
+  const qId = String(quiz.questionId ?? quiz.id ?? "").trim();
+  if (!qId) {
+    console.warn("submitAnswer: missing question id on quiz object", quiz);
+    return pulse("Internal error: missing QuestionId.", "bad");
+  }
+
+  // Read user's answer (string for MC, string/array for FITB)
   const ansRaw = getUserAnswer(quiz);
   if ((ansRaw == null || ansRaw === "" || (Array.isArray(ansRaw) && ansRaw.length === 0)) && quiz.required) {
     return pulse("Answer required.", "warn");
   }
 
-  // correctness
+  // Determine correctness
   const type = String(quiz.type || "").toUpperCase();
   let isCorrect;
   if (type === "MC") {
     isCorrect = String(ansRaw ?? "") === String(quiz.correct ?? "");
   } else {
-    // pull correct answers from FITB field
+    // FITB: use your parsed answers & flags
     const corrFITB = quiz.fitbAnswers ?? "";
     isCorrect = isFitbCorrect(
       ansRaw,
@@ -693,25 +698,23 @@ async function submitAnswer() {
     );
   }
 
-  // local progress (do not overwrite a past true)
-  const prev = state.answers[quiz.questionId];
+  // Local progress (don't overwrite a previous TRUE)
+  const prev = state.answers[qId];
   if (!(prev && prev.isCorrect === true)) {
-    state.answers[quiz.questionId] = { answer: ansRaw, isCorrect, at: Date.now() };
+    state.answers[qId] = { answer: ansRaw, isCorrect, at: Date.now() };
   }
 
-  // build the "Correct Answer" string per type
+  // Build display strings
   const correctAnswerString = (type === "MC")
     ? String(quiz.correct ?? "")
     : buildCorrectAnswerDisplay(quiz.fitbAnswers ?? "");
-
-  // store-friendly answer string
   const answerForStorage = Array.isArray(ansRaw) ? ansRaw.join(" | ") : String(ansRaw ?? "");
 
   try {
     await upsertAnswerRecordWithWrongCount({
       userEmail,
       presentationId: state.presentationId,
-      questionId: quiz.questionId,
+      questionId: qId,
       answer: answerForStorage,
       isCorrect,
       correctAnswer: correctAnswerString,
@@ -720,14 +723,18 @@ async function submitAnswer() {
       timestamp: new Date().toISOString()
     });
 
-    pulse(isCorrect ? "Saved ✓" : "Incorrect)", isCorrect ? "Correct" : "warn");
-    try { await recalcAndDisplayProgress({ updateAirtable: true }); } catch {}
+    // FIX: remove stray ')' and use known levels
+    pulse(isCorrect ? "Saved ✓" : "Incorrect", isCorrect ? "info" : "warn");
+
+    try {
+      await recalcAndDisplayProgress({ updateAirtable: true });
+    } catch (_) {}
   } catch (e) {
     console.error("Save failed", e);
     pulse("Save failed", "bad");
   }
 
-  // always advance
+  // Always advance
   if (state.i < state.slides.length - 1) {
     state.i += 1;
     const pageId = state.slides[state.i]?.objectId || "";
@@ -738,7 +745,12 @@ async function submitAnswer() {
   }
 }
 
-if (el.btnSubmit) el.btnSubmit.removeEventListener?.("click", submitAnswer);
+// Wire the submit button AFTER (re)rendering the question UI:
+if (el.btnSubmit) {
+  el.btnSubmit.removeEventListener?.("click", submitAnswer);
+  el.btnSubmit.addEventListener?.("click", submitAnswer);
+}
+
 
 /* ------------------ Answer persistence (UPSERT) --------------------------- */
 // Count distinct *answered* QuestionIds (any correctness) for this user+deck
@@ -787,6 +799,17 @@ function buildCorrectAnswerDisplay(fitbAnswers){
   } catch { return String(fitbAnswers||""); }
 }
 
+// Append to a JSON array string safely
+function appendJsonArrayString(existingJson, entry){
+  let arr = [];
+  try { if (existingJson) arr = JSON.parse(existingJson); } catch { arr = []; }
+  if (!Array.isArray(arr)) arr = [];
+  arr.push(entry);
+  return JSON.stringify(arr);
+}
+
+// Upsert exactly one record per (UserEmail, PresentationId, Attempt, QuestionId)
+// and track wrong attempts (+ append wrong answers to JSON fields on the same row).
 async function upsertAnswerRecordWithWrongCount({
   userEmail,
   presentationId,
@@ -799,11 +822,12 @@ async function upsertAnswerRecordWithWrongCount({
   timestamp
 }){
   const attempt = Number(state.currentAttempt || 1);
-
-  // 1) Look up existing record for this (user, deck, question, attempt)
-  const url = new URL(aBaseUrl());
   const e = s => String(s||"").replace(/'/g, "\\'");
-  url.searchParams.set("filterByFormula",
+
+  // 1) Lookup existing record for this composite key
+  const url = new URL(aBaseUrl());
+  url.searchParams.set(
+    "filterByFormula",
     `AND({UserEmail}='${e(userEmail)}',{PresentationId}='${e(presentationId)}',{QuestionId}='${e(questionId)}',{Attempt}=${attempt})`
   );
   url.searchParams.set("pageSize", "1");
@@ -811,28 +835,50 @@ async function upsertAnswerRecordWithWrongCount({
   const getRes = await fetch(url.toString(), { headers: aHeaders() });
   if (!getRes.ok) throw new Error(`Lookup failed: ${getRes.status} ${await getRes.text().catch(()=>"(no body)")}`);
   const data = await getRes.json().catch(()=>({}));
-  const existing = (data.records || [])[0];
+  const existing = (data.records||[])[0];
+
+  // 2) Build fields
+  const nowIso = timestamp || new Date().toISOString();
 
   if (existing) {
     const f = existing.fields || {};
-    const existingIsCorrect = !!f.IsCorrect;
-
-    let wrongAttempts = Number(f[ANSWER_FIELDS.WRONG_ATTEMPTS_FIELD] || 0);
+    // bump wrong attempts if incorrect
+    let wrongAttempts = Number(f["Wrong Attempts"] || 0);
     if (!isCorrect) wrongAttempts = Number.isFinite(wrongAttempts) ? wrongAttempts + 1 : 1;
 
-    const resultStr = (existingIsCorrect || isCorrect) ? "Right" : "Wrong";
+    // keep "once correct, always correct"
+    const finalIsCorrect = f.IsCorrect ? true : !!isCorrect;
+
+    // accumulate wrong answers JSON
+    let wrongJson = f["Wrong Answers (JSON)"] || "";
+    if (!isCorrect) {
+      wrongJson = appendJsonArrayString(wrongJson, { answer: String(answer||""), at: nowIso });
+    }
+
+    // optional: keep all events in the same row too
+    let eventsJson = f["Answer Events (JSON)"] || "";
+    eventsJson = appendJsonArrayString(eventsJson, {
+      answer: String(answer||""),
+      correct: !!isCorrect,
+      at: nowIso
+    });
 
     const patchFields = {
+      UserEmail: userEmail,
+      PresentationId: presentationId,
+      QuestionId: questionId,
       Answer: answer,
-      [ANSWER_FIELDS.CORRECT_ANSWER_FIELD]: correctAnswer,
-      [ANSWER_FIELDS.WRONG_ATTEMPTS_FIELD]: wrongAttempts,
-      IsCorrect: existingIsCorrect ? true : !!isCorrect,
-      [ANSWER_FIELDS.RESULT_FIELD]: resultStr,
-      Attempt: attempt, // NEW
-
-      [ANSWER_FIELDS.TIMESTAMP_FIELD]: timestamp,
-      [ANSWER_FIELDS.QUESTION_FIELD]: questionText,
-      [ANSWER_FIELDS.TYPE_FIELD]: type
+      IsCorrect: finalIsCorrect,
+      "Correct Answer": correctAnswer,
+      "Wrong Attempts": wrongAttempts,
+      Result: finalIsCorrect ? "Right" : "Wrong",
+      Attempt: attempt,
+      Timestamp: nowIso,
+      Question: questionText,
+      Type: type,
+      // optional JSON fields (ignore safely if you didn't create them)
+      "Wrong Answers (JSON)": wrongJson,
+      "Answer Events (JSON)": eventsJson
     };
 
     const patchRes = await fetch(aBaseUrl(), {
@@ -841,24 +887,25 @@ async function upsertAnswerRecordWithWrongCount({
       body: JSON.stringify({ records: [{ id: existing.id, fields: patchFields }] })
     });
     if (!patchRes.ok) throw new Error(`Patch failed: ${patchRes.status} ${await patchRes.text().catch(()=>"(no body)")}`);
-    return;
+    return { recordId: existing.id, created: false };
   }
 
-  // 2) Create record if not found (for this attempt)
+  // 3) If no existing row, create a new one
   const createFields = {
     UserEmail: userEmail,
     PresentationId: presentationId,
     QuestionId: questionId,
     Answer: answer,
     IsCorrect: !!isCorrect,
-    [ANSWER_FIELDS.CORRECT_ANSWER_FIELD]: correctAnswer,
-    [ANSWER_FIELDS.WRONG_ATTEMPTS_FIELD]: (!isCorrect ? 1 : 0),
-    [ANSWER_FIELDS.RESULT_FIELD]: isCorrect ? "Right" : "Wrong",
-    Attempt: attempt, // NEW
-
-    [ANSWER_FIELDS.TIMESTAMP_FIELD]: timestamp,
-    [ANSWER_FIELDS.QUESTION_FIELD]: questionText,
-    [ANSWER_FIELDS.TYPE_FIELD]: type
+    "Correct Answer": correctAnswer,
+    "Wrong Attempts": (!isCorrect ? 1 : 0),
+    Result: isCorrect ? "Right" : "Wrong",
+    Attempt: attempt,
+    Timestamp: nowIso,
+    Question: questionText,
+    Type: type,
+    "Wrong Answers (JSON)": !isCorrect ? JSON.stringify([{ answer: String(answer||""), at: nowIso }]) : JSON.stringify([]),
+    "Answer Events (JSON)": JSON.stringify([{ answer: String(answer||""), correct: !!isCorrect, at: nowIso }])
   };
 
   const res = await fetch(aBaseUrl(), {
@@ -867,6 +914,58 @@ async function upsertAnswerRecordWithWrongCount({
     body: JSON.stringify({ records: [{ fields: createFields }] })
   });
   if (!res.ok) throw new Error(`Create failed: ${res.status} ${await res.text().catch(()=>"(no body)")}`);
+  const created = await res.json().catch(()=>({}));
+  return { recordId: created?.records?.[0]?.id, created: true };
+}
+
+// Find or create the summary row in the same table (QuestionId="__summary__")
+async function getOrCreateSummaryRecordId({ userEmail, presentationId, attempt }){
+  const e = s => String(s||"").replace(/'/g, "\\'");
+  const url = new URL(aBaseUrl());
+  url.searchParams.set("filterByFormula",
+    `AND({UserEmail}='${e(userEmail)}',{PresentationId}='${e(presentationId)}',{Attempt}=${Number(attempt||1)},{QuestionId}='__summary__')`
+  );
+  url.searchParams.set("pageSize","1");
+
+  const res = await fetch(url.toString(), { headers: aHeaders() });
+  if (!res.ok) throw new Error(`Summary lookup failed: ${res.status}`);
+  const data = await res.json().catch(()=>({}));
+  const existing = (data.records||[])[0];
+  if (existing) return existing.id;
+
+  const create = await fetch(aBaseUrl(), {
+    method: "POST",
+    headers: aHeaders(),
+    body: JSON.stringify({ records: [{ fields: {
+      UserEmail: userEmail,
+      PresentationId: presentationId,
+      Attempt: Number(attempt||1),
+      QuestionId: "__summary__",
+      "Completed Count": 0
+    } }] })
+  });
+  if (!create.ok) throw new Error(`Summary create failed: ${create.status} ${await create.text().catch(()=>"(no body)")}`);
+  const j = await create.json().catch(()=>({}));
+  return j?.records?.[0]?.id;
+}
+
+// Patch only the summary row (never every answer row)
+async function updateAttemptSummaryOnAnswersTable({ userEmail, presentationId, attempt, completedCount, correctCount, total }){
+  const id = await getOrCreateSummaryRecordId({ userEmail, presentationId, attempt });
+  const fields = {
+    "Completed Count": Number(completedCount||0)
+  };
+  if (typeof correctCount !== "undefined") fields["Correct Count"] = Number(correctCount||0);
+  if (typeof total !== "undefined")        fields["Total Questions"] = Number(total||0);
+
+  const res = await fetch(aBaseUrl(), {
+    method: "PATCH",
+    headers: aHeaders(),
+    body: JSON.stringify({ records: [{ id, fields }] })
+  });
+  if (!res.ok){
+    console.warn("Summary patch failed:", res.status, await res.text().catch(()=>"(no body)"));
+  }
 }
 
 
