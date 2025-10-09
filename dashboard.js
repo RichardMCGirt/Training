@@ -439,7 +439,6 @@ async function render(){
           ${bar}
           <div class="row" style="margin-top:10px">
             <button class="btn" onclick="openModule(${modEsc})">Open</button>
-            <button class="btn btn-ghost" onclick="openModule(${modEsc}, { reset:true })" style="margin-left:8px">Restart</button>
           </div>
         </div>
       </div>`;
