@@ -434,6 +434,24 @@ function summarizeQuestion(f){
     return `MC – ${arr.length} option(s), correct: “${correct}”`;
   }
 }
+// Heuristic: read a wrong count from common field names
+function getWrongCount(f){
+  const cand = [
+    "Wrong Attempts",
+    "Wrong Count",
+    "Incorrect Count",
+    "Wrong Users",
+    "People Wrong",
+    "Wrong"
+  ];
+  for (const k of cand){
+    const v = f && f[k];
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return 0;
+}
+
 function renderModulesView(rows){
   const el = ui.moduleGroups;
   if (!el) return;
@@ -453,16 +471,20 @@ function renderModulesView(rows){
       const qtxt = esc(f.Question || "");
       const id = esc(r.id);
       const meta = summarizeQuestion(f);
+      const wrongCount = getWrongCount(f);
+const wrongBadge = (wrongCount > 10)
+  ? `<span class="badge bad" title="${wrongCount} people got this wrong" style="margin-left:8px">${wrongCount} employees have answered this question wrong</span>`
+  : "";
       return `<div class="qline">
         <div class="qtext">
-          <div><strong>${qtxt}</strong></div>
-          <div class="muted small">${esc(meta)}</div>
-        </div>
-        <div class="actions" style="display:flex; gap:8px">
-          <button class="btn btn-ghost edit" data-id="${id}">Edit</button>
-          <button class="btn btn-danger delete" data-id="${id}">Delete</button>
-        </div>
-      </div>`;
+    <div><strong>${qtxt}</strong>${wrongBadge}</div>
+    <div class="muted small">${esc(meta)}</div>
+  </div>
+  <div class="actions" style="display:flex; gap:8px">
+    <button class="btn btn-ghost edit" data-id="${id}">Edit</button>
+    <button class="btn btn-danger delete" data-id="${id}">Delete</button>
+  </div>
+</div>`;
     }).join("");
     out.push(`<div class="mod" data-mod="${esc(modName)}">
       <button class="mod-head" type="button" aria-expanded="false">
