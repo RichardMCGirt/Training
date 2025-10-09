@@ -40,6 +40,39 @@ function getUserEmail(){
           || ''
          ).trim();
 }
+// --- Deep-link helpers: keep URL in sync & jump by QuestionId ----------------
+function updateUrlForCurrentQuestion() {
+  try {
+    const params = new URLSearchParams(location.search);
+    if (state.module) params.set("module", state.module);
+    if (state.presentationId) params.set("presentationId", state.presentationId);
+
+    const email = getUserEmail();
+    if (email) params.set("userEmail", email);
+
+    const q = currentQuizForIndex(state.i);
+    const qid = q?.questionId || q?.id || "";
+    if (qid) params.set("questionId", qid);
+
+    const url = location.pathname + "?" + params.toString();
+    history.replaceState(null, "", url);
+  } catch(e) {
+    console.warn("updateUrlForCurrentQuestion failed", e);
+  }
+}
+
+// Find the slide/index for a given QuestionId
+function findIndexByQuestionId(qid) {
+  if (!qid) return -1;
+  const max = Math.max(state.slides?.length || 0, Object.keys(state.quizByIndex||{}).length || 0);
+  for (let i = 0; i < max; i++) {
+    const q = currentQuizForIndex(i);
+    if (!q) continue;
+    const id = String(q.questionId ?? q.id ?? "").trim();
+    if (id && id === qid) return i;
+  }
+  return -1;
+}
 
 function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c])); }
 function att(s){ return String(s==null?"":s).replace(/"/g, "&quot;"); }
@@ -62,15 +95,28 @@ function _headers(){
   };
 }
 
-/* ========================================================================== */
-/* BOOTSTRAP                                                                  */
-/* ========================================================================== */
-
 document.addEventListener("DOMContentLoaded", boot);
 
 async function boot(){
   // Resolve module
   const params = new URLSearchParams(location.search);
+  
+   const emailFromUrl = (params.get("userEmail") || "").trim();
+  if (emailFromUrl) {
+    try { localStorage.setItem("trainingEmail", emailFromUrl); } catch {}
+    const emailInp = document.getElementById("userEmail");
+    if (emailInp) emailInp.value = emailFromUrl;
+  }
+  // Parse redo list from URL (CSV of QuestionIds)
+state.redoList = [];
+state.redoActive = false;
+{
+  const redoQidsParam = (params.get("redoQids") || "").trim();
+  if (redoQidsParam) {
+    state.redoList = redoQidsParam.split(",").map(s => s.trim()).filter(Boolean);
+    state.redoActive = state.redoList.length > 0;
+  }
+}
   const modFromUrl = (params.get("module") || "").trim();
   const modFromLS  = (localStorage.getItem("selectedModule") || "").trim();
   state.module = modFromUrl || modFromLS;
@@ -214,6 +260,7 @@ const ANSWER_FIELDS = {
 
 const RANDOMIZE_QUESTIONS = false;
 AIRTABLE.ANSWERS_TABLE_ID = 'tblkz5HyZGpgO093S';
+
 function aBaseUrl(){
   return `https://api.airtable.com/v0/${AIRTABLE.BASE_ID}/${AIRTABLE.ANSWERS_TABLE_ID}`;
 }
@@ -400,7 +447,9 @@ function go(delta){
   const pageId = state.slides[state.i]?.objectId || "";
   showEmbed(state.presentationId, pageId);
   render();
+  updateUrlForCurrentQuestion(); // <— add this
 }
+
 if (el.prevBtn) el.prevBtn.addEventListener("click", () => go(-1));
 if (el.nextBtn) el.nextBtn.addEventListener("click", () => go(+1));
 
@@ -423,6 +472,8 @@ if (el.counter) el.counter.textContent = `${state.i + 1} / ${total}`;
   // Buttons
   if (el.prevBtn) el.prevBtn.disabled = state.i <= 0;
   if (el.nextBtn) el.nextBtn.disabled = state.i >= (state.slides.length - 1);
+    updateUrlForCurrentQuestion();
+
 }
 
 /* ------------------ Helpers for current quiz ------------------------------ */
@@ -448,6 +499,21 @@ function currentQuizForIndex(i){
   if (byId) return byId;
   return state.quizByIndex[i] || null;
 }
+function findIndexByQuestionId(qid) {
+  if (!qid) return -1;
+  const max = Math.max(
+    state.slides?.length || 0,
+    Object.keys(state.quizByIndex || {}).length || 0
+  );
+  for (let i = 0; i < max; i++) {
+    const q = currentQuizForIndex(i);
+    if (!q) continue;
+    const id = String(q.questionId ?? q.id ?? "").trim();
+    if (id && id === qid) return i;
+  }
+  return -1;
+}
+
 
 /* ------------------ Render quiz (no prior-answer display) ------------------ */
 
@@ -585,6 +651,21 @@ wireRetakeButton();
     const pageId = state.slides[state.i]?.objectId || "";
     showEmbed(state.presentationId, pageId);
   } catch(e){ console.warn('Resume load failed', e); }
+  // If a specific question was requested, jump to it
+  try {
+    const params = new URLSearchParams(location.search);
+    const wantedQ = (params.get("questionId") || "").trim();
+    if (wantedQ) {
+      const idx = findIndexByQuestionId(wantedQ);
+      if (idx >= 0) {
+        state.i = idx;
+        const pageId2 = state.slides[state.i]?.objectId || "";
+        showEmbed(state.presentationId, pageId2);
+      }
+    }
+  } catch(e) {
+    console.warn("Deep-link jump failed", e);
+  }
 
   if (el.btnRetry) {
     el.btnRetry.onclick = () => {
@@ -598,6 +679,22 @@ wireRetakeButton();
   }
 
   await recalcAndDisplayProgress({ updateAirtable: false });
+  try {
+  const params = new URLSearchParams(location.search);
+  const wantedQ = (params.get("questionId") || "").trim();
+  if (!wantedQ && state.redoActive && state.redoList.length) {
+    const first = state.redoList[0];
+    const idx = findIndexByQuestionId(first);
+    if (idx >= 0) {
+      state.i = idx;
+      const pageId2 = state.slides[state.i]?.objectId || "";
+      showEmbed(state.presentationId, pageId2);
+    }
+  }
+} catch (e) {
+  console.warn("redo jump failed", e);
+}
+
   render();
 }
 
@@ -735,12 +832,40 @@ async function submitAnswer() {
   }
 
   // Always advance
-  if (state.i < state.slides.length - 1) {
-    state.i += 1;
-    const pageId = state.slides[state.i]?.objectId || "";
-    showEmbed(state.presentationId, pageId);
-    render();
-  } else {
+ // Advance behavior
+const curr = currentQuizForIndex(state.i);
+const currId = String(curr?.questionId ?? curr?.id ?? "").trim();
+
+if (state.redoActive && state.redoList.length) {
+  // Find next QID in the redo list after the current one
+  const pos = state.redoList.indexOf(currId);
+  let nextIdx = -1;
+  for (let k = Math.max(0, pos) + 1; k < state.redoList.length; k++) {
+    const idx = findIndexByQuestionId(state.redoList[k]);
+    if (idx >= 0) { nextIdx = idx; break; }
+  }
+
+  if (nextIdx === -1) {
+    pulse("All selected wrong questions reviewed.", "info");
+    setTimeout(()=>{ location.href = "dashboard.html"; }, 700);
+    return;
+  }
+
+  state.i = nextIdx;
+  const pageId = state.slides[state.i]?.objectId || "";
+  showEmbed(state.presentationId, pageId);
+  render();
+  return;
+}
+
+// Default: normal next
+if (state.i < state.slides.length - 1) {
+  state.i += 1;
+  const pageId = state.slides[state.i]?.objectId || "";
+  showEmbed(state.presentationId, pageId);
+  render();
+}
+else {
     if (el.retryRow) el.retryRow.style.display = "flex";
   }
 }

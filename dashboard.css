@@ -1,18 +1,57 @@
- body{margin:0;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f7f7fb;color:#111827}
-    .wrap{max-width:1000px;margin:30px auto;padding:0 16px}
-    .bar{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
-    .btn{height:36px;border:0;border-radius:8px;background:#111827;color:#fff;cursor:pointer;padding:6px 12px}
-    .muted{color:#6b7280}
-    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
-    .card{background:white;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 4px 16px rgba(0,0,0,.05);overflow:hidden}
-    .hd{padding:10px 12px;border-bottom:1px solid #e5e7eb;font-weight:600}
-    .bd{padding:12px}
-    input{height:36px;border:1px solid #e5e7eb;border-radius:8px;padding:6px 10px;width:100%}
-    .row{display:flex;gap:8px;align-items:center}
-    .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
-    .progress{height:8px;border-radius:999px;background:#e5e7eb;overflow:hidden}
-    .progress i{display:block;height:100%;width:0%;background:#2563eb}
-    .progress.correct i{background:#16a34a}
-    .pill{display:inline-block;padding:2px 8px;border:1px solid #e5e7eb;border-radius:999px;font-size:12px;color:#374151}
-    .stat{display:flex;justify-content:space-between;font-size:13px;margin-top:8px}
-    .stat b{font-weight:600}
+body{margin:0;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f7f7fb;color:#111827}
+.wrap{max-width:1000px;margin:30px auto;padding:0 16px}
+.bar{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+.btn{height:36px;border:0;border-radius:8px;background:#111827;color:#fff;cursor:pointer;padding:6px 12px}
+.muted{color:#6b7280}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+.card{background:white;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 4px 16px rgba(0,0,0,.05);overflow:hidden}
+.hd{padding:10px 12px;border-bottom:1px solid #e5e7eb;font-weight:600}
+.bd{padding:12px}
+input{height:36px;border:1px solid #e5e7eb;border-radius:8px;padding:6px 10px;width:100%}
+.row{display:flex;gap:8px;align-items:center}
+.mono{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
+.progress{height:8px;border-radius:999px;background:#e5e7eb;overflow:hidden}
+.progress i{display:block;height:100%;width:0%;background:#2563eb}
+.progress.correct i{background:#16a34a}
+.pill{display:inline-block;padding:2px 8px;border:1px solid #e5e7eb;border-radius:999px;font-size:12px;color:#374151}
+.stat{display:flex;justify-content:space-between;font-size:13px;margin-top:8px}
+.stat b{font-weight:600}
+
+/* Toggle + mistakes grid */
+.toggle{display:flex;gap:8px;align-items:center;font-size:14px}
+.mistakes-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}
+.mistake{border:1px solid #e5e7eb;border-radius:10px;padding:10px;background:#fff}
+.mistake .title{font-weight:600;margin-bottom:6px}
+.mistake .meta{font-size:12px;color:#6b7280;margin-bottom:8px}
+.mistake .q{margin-bottom:8px}
+.mistake .ans{font-size:13px}
+.mistake .btn-row{display:flex;gap:8px;margin-top:10px}
+.mistake .badge{display:inline-block;padding:2px 6px;border-radius:999px;border:1px solid #e5e7eb;font-size:12px}
+
+/* --- NEW: Group mistakes by module with tap-to-open headers --- */
+.group{border:1px solid #e5e7eb;border-radius:12px;background:#fff;overflow:hidden}
+.group+.group{margin-top:12px}
+.group-header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:12px 14px;cursor:pointer;user-select:none;
+  background:#fafafa;border-bottom:1px solid #e5e7eb
+}
+.group-header:hover{background:#f5f5f7}
+.group-title{font-weight:600}
+.group-sub{font-size:12px;color:#6b7280}
+.group-right{display:flex;align-items:center;gap:10px}
+.count-pill{
+  font-size:12px;border:1px solid #e5e7eb;border-radius:999px;padding:2px 8px;color:#374151;background:#fff
+}
+.chev{
+  width:10px;height:10px;border-right:2px solid #6b7280;border-bottom:2px solid #6b7280;
+  transform:rotate(-45deg);transition:transform .18s ease
+}
+.group.open .chev{transform:rotate(45deg)}
+.group-body{padding:12px;display:none}
+.group.open .group-body{display:block}
+
+/* nicer mistake cards inside groups */
+.group-body .mistakes-grid{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+.group-body .mistake{transition:box-shadow .15s ease,border-color .15s ease}
+.group-body .mistake:hover{box-shadow:0 6px 20px rgba(0,0,0,.06);border-color:#e3e5ea}

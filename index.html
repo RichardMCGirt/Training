@@ -13,12 +13,12 @@
     <div class="controls">
       <input id="presentationId" type="text" placeholder="Google Slides ID (e.g. 1lsNam3.)"/>
       <button class="btn" onclick="window.location.href='dashboard.html'">Back to Dashboard</button>
-<input 
-  id="userEmail" 
-  type="text" 
-  placeholder="Your email (for saving answers)" 
-  readonly
-/>
+      <input 
+        id="userEmail" 
+        type="text" 
+        placeholder="Your email (for saving answers)" 
+        readonly
+      />
       <button class="btn" id="btnLoad" onclick="onLoadDeckClick()">Load</button>
 
       <span class="muted">Navigate:</span>
@@ -63,20 +63,29 @@
       const params = new URLSearchParams(location.search);
       const pid = params.get('presentationId') || '';
       const reset = params.get('reset') === '1';
-      const email = localStorage.getItem('trainingEmail') || localStorage.getItem('authEmail') || '';
+      // NEW: allow userEmail to be set by query (for deep-link)
+      const emailFromQuery = (params.get('userEmail') || '').trim();
+      const emailLS = localStorage.getItem('trainingEmail') || localStorage.getItem('authEmail') || '';
+      const effectiveEmail = emailFromQuery || emailLS;
+
       const inputP = document.getElementById('presentationId');
       const inputE = document.getElementById('userEmail');
       if (pid) inputP.value = pid;
-      if (email) inputE.value = email;
+      if (effectiveEmail) {
+        inputE.value = effectiveEmail;
+        try {
+          localStorage.setItem('trainingEmail', effectiveEmail);
+        } catch {}
+      }
       // If redirect came from dashboard and we have a pid, auto-load
       if (pid) {
         if (reset) {
-          const key = `progress:${email}:${pid}`;
+          const key = `progress:${effectiveEmail}:${pid}`;
           localStorage.removeItem(key);
         }
-    //    window.addEventListener('DOMContentLoaded', () => onLoadDeckClick());
+        // window.addEventListener('DOMContentLoaded', () => onLoadDeckClick());
       }
-      // keep email in localStorage
+      // keep email in localStorage (if someone enables typing)
       inputE.addEventListener('input', () => localStorage.setItem('trainingEmail', inputE.value.trim()));
     })();
   </script>
