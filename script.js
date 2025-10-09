@@ -715,8 +715,6 @@ async function submitAnswer() {
       answer: answerForStorage,
       isCorrect,
       correctAnswer: correctAnswerString,
-
-      // meta you asked to save in tblkz5HyZGpgO093S
       questionText: String(quiz.question || ""),
       type,
       timestamp: new Date().toISOString()
