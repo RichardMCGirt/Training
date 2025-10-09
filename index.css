@@ -34,3 +34,8 @@
 
     /* Retry button row */
     #retryRow { display:none; margin-top:12px; }
+
+    #userEmail[readonly] {
+  background-color: #f3f4f6;
+  cursor: not-allowed;
+}

@@ -13,7 +13,12 @@
     <div class="controls">
       <input id="presentationId" type="text" placeholder="Google Slides ID (e.g. 1lsNam3.)"/>
       <button class="btn" onclick="window.location.href='dashboard.html'">Back to Dashboard</button>
-      <input id="userEmail" type="text" placeholder="Your email (for saving answers)" />
+<input 
+  id="userEmail" 
+  type="text" 
+  placeholder="Your email (for saving answers)" 
+  readonly
+/>
       <button class="btn" id="btnLoad" onclick="onLoadDeckClick()">Load</button>
 
       <span class="muted">Navigate:</span>
@@ -44,9 +49,7 @@
             <span id="saveStatus" class="muted"></span>
           </div>
           <div class="row" id="retryRow">
-            <button id="retakeQuizBtn" type="button" style="display:inline-block; padding:8px 12px; border:1px solid #ddd; border-radius:8px; background:#fff; cursor:pointer;">
-  Retake Quiz
-</button>
+   
 
           </div>
         </div>

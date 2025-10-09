@@ -37,6 +37,13 @@ const state = {
 /* ========================================================================== */
 /* Utilities                                                                  */
 /* ========================================================================== */
+function getUserEmail(){
+  return (el.userEmail?.value
+          || localStorage.getItem('trainingEmail')
+          || localStorage.getItem('authEmail')
+          || ''
+         ).trim();
+}
 
 function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c])); }
 function att(s){ return String(s==null?"":s).replace(/"/g, "&quot;"); }
@@ -414,7 +421,7 @@ if (el.nextBtn) el.nextBtn.addEventListener("click", () => go(+1));
 function render(){
   const total = Math.max(Object.keys(state.quizByIndex).length || 0, state.slides.length);
   const at = Math.min(state.i + 1, Math.max(total, 1));
-  if (el.counter) el.counter.textContent = `${at} / ${total}`;
+if (el.counter) el.counter.textContent = `${state.i + 1} / ${total}`;
   if (el.barInner) {
     const pct = total ? Math.round((at*100)/total) : 0;
     el.barInner.style.width = pct + "%";
@@ -441,6 +448,12 @@ function qHeaders(){ return _headers(); }
 function aHeaders(){ return _headers(); }
 
 /* ------------------ Quiz selection ---------------------------------------- */
+function toggleRetakeVisibilityByEmail(){
+  const btn = document.getElementById('retakeQuizBtn');
+  if (!btn) return;
+  const hasEmail = !!getUserEmail();
+  btn.style.display = hasEmail ? 'inline-block' : 'none';
+}
 
 function currentQuizForIndex(i){
   const slide = state.slides[i];
@@ -461,27 +474,22 @@ function renderQuiz(quiz) {
     return;
   }
 
-  // IMPORTANT: We NEVER show prior answers. No checked radios; no input value.
   if (quiz.type === "MC") {
-    const opts = (quiz.options || [])
-      .map(o => {
-        // No "checked" attribute → nothing is pre-selected.
-        return `<label class="opt">
-          <input type="radio" name="opt" value="${att(o)}" autocomplete="off"/>
-          <div><strong>${esc(o)}</strong></div>
-        </label>`;
-      })
-      .join("");
+    const opts = (quiz.options || []).map(o => `
+      <label class="opt">
+        <input type="radio" name="opt" value="${att(o)}" autocomplete="off"/>
+        <div><strong>${esc(o)}</strong></div>
+      </label>`).join("");
 
     el.quizBox.innerHTML = `
       <div><strong>${esc(quiz.question)}</strong> ${quiz.required ? `<span class="req">*</span>` : ""}</div>
       <div class="opts">${opts}</div>
       <div class="row" style="margin-top:12px">
         <button class="btn" id="btnSubmit">Submit answer</button>
+        <button id="retakeQuizBtn" type="button" class="btn btn-ghost">Retake Quiz</button>
       </div>
     `;
-  } else {
-    // FITB
+  } else { // FITB
     el.quizBox.innerHTML = `
       <div><strong>${esc(quiz.question)}</strong> ${quiz.required ? `<span class="req">*</span>` : ""}</div>
       <div class="fitb">
@@ -489,16 +497,19 @@ function renderQuiz(quiz) {
       </div>
       <div class="row" style="margin-top:12px">
         <button class="btn" id="btnSubmit">Submit answer</button>
+        <button id="retakeQuizBtn" type="button" class="btn btn-ghost">Retake Quiz</button>
       </div>
     `;
   }
 
-  // Wire submit
+  // wire after the HTML exists
   const btn = el.quizBox.querySelector("#btnSubmit");
-  if (btn) {
-    btn.addEventListener("click", submitAnswer);
-  }
+  if (btn) btn.addEventListener("click", submitAnswer);
+
+  wireRetakeButton();                  // ← move here
+  toggleRetakeVisibilityByEmail();     // ← show/hide by email
 }
+
 
 /* ------------------ Answer reading from UI -------------------------------- */
 
@@ -513,46 +524,32 @@ function getUserAnswer(quiz){
   }
 }
 
-/** ──────────────────────────────────────────────────────────────────
- * Fill-in-the-blank correctness
- *
- * Accepts userAnswer and correctAnswers in multiple shapes:
- * - userAnswer: string or array of strings
- * - correctAnswers: string (delimited, JSON array string), or array
- *
- * By default:
- * - If counts match → compare positionally.
- * - If counts differ → require every user entry to exist in the correct set.
- *   (for single blank this is a simple “member of correct set”)
- * ────────────────────────────────────────────────────────────────── */
+
 function isFitbCorrect(userAnswer, correctAnswers, opts = {}) {
   const { useRegex = false, caseSensitive = false } = opts;
   const userArr = toStrArray(userAnswer);
   const correctArr = toStrArray(correctAnswers);
 
   if (useRegex) {
-    // regex mode: any one correct pattern matches the answer
     const patterns = correctArr.map(p => {
       try { return new RegExp(p, caseSensitive ? "" : "i"); }
       catch { return null; }
     }).filter(Boolean);
 
     if (!userArr.length) return false;
-    // treat single-blank or multi-blank uniformly (AND all user items must match some pattern)
     return userArr.every(u => patterns.some(rx => rx.test(String(u||""))));
   }
 
-  // normalized compare set(s)
   const norm = s => (caseSensitive ? String(s||"") : String(s||"").toLowerCase().trim());
   const corrSet = new Set(correctArr.map(norm));
 
   if (userArr.length === correctArr.length) {
     return userArr.every((u, i) => norm(u) === norm(correctArr[i]));
-  } else {ubmi
-    // “bag” membership
+  } else {
     return userArr.every(u => corrSet.has(norm(u)));
   }
 }
+
 
 function toStrArray(v){
   if (Array.isArray(v)) return v.map(x => String(x ?? ""));
@@ -581,7 +578,6 @@ async function onDeckLoaded(presentationId, slidesArray){
     if (fromGAS.length) slides = fromGAS;
   }
   state.slides = slides.length ? slides : [{ objectId: presentationId, title: "Slides Embed" }];
-  state.i = 0;
 
   const firstPage = state.slides[0]?.objectId || "";
   showEmbed(presentationId, firstPage);
@@ -598,13 +594,10 @@ async function onDeckLoaded(presentationId, slidesArray){
   if (el.prevBtn) el.prevBtn.disabled = state.i <= 0;
   if (el.nextBtn) el.nextBtn.disabled = state.slides.length <= 1;
   await initQuizAttempt();
-
+wireRetakeButton(); 
   // Load prior answers ONLY to position progress (never to prefill UI)
   try {
-    const prior = await loadExistingAnswersForUser(
-      state.presentationId,
-      (el.userEmail?.value||localStorage.getItem('trainingEmail')||'').trim()
-    );
+    const prior = await loadExistingAnswersForUser(state.presentationId, getUserEmail());
     state.answers = Object.assign({}, prior);
     state.i = nextUnansweredIndex();
     const pageId = state.slides[state.i]?.objectId || "";
@@ -661,7 +654,7 @@ async function submitAnswer() {
   const quiz = currentQuizForIndex(state.i);
   if (!quiz) return;
 
-  const userEmail = (el.userEmail?.value || localStorage.getItem('trainingEmail') || '').trim();
+  const userEmail = getUserEmail();
   if (!userEmail) return pulse("Enter your email to save.", "warn");
 
   // Read user's answer (string for MC or string/array for FITB)
@@ -738,10 +731,13 @@ if (el.btnSubmit) el.btnSubmit.removeEventListener?.("click", submitAnswer);
 // Count distinct *answered* QuestionIds (any correctness) for this user+deck
 async function countDistinctAnsweredForUserPresentation(presentationId, userEmail){
   if (!userEmail || !presentationId) return 0;
+  const attempt = Number(state.currentAttempt || 1);
+
   const url = new URL(aBaseUrl());
   const e = s => String(s||"").replace(/'/g, "\\'");
-  url.searchParams.set("filterByFormula",
-    `AND({UserEmail}='${e(userEmail)}',{PresentationId}='${e(presentationId)}')`
+  url.searchParams.set(
+    "filterByFormula",
+    `AND({UserEmail}='${e(userEmail)}',{PresentationId}='${e(presentationId)}',{Attempt}=${attempt})`
   );
   url.searchParams.set("pageSize","100");
 
@@ -759,8 +755,9 @@ async function countDistinctAnsweredForUserPresentation(presentationId, userEmai
     offset = data.offset;
     if (offset){
       const u = new URL(aBaseUrl());
-      u.searchParams.set("filterByFormula",
-        `AND({UserEmail}='${e(userEmail)}',{PresentationId}='${e(presentationId)}')`
+      u.searchParams.set(
+        "filterByFormula",
+        `AND({UserEmail}='${e(userEmail)}',{PresentationId}='${e(presentationId)}',{Attempt}=${attempt})`
       );
       u.searchParams.set("pageSize","100");
       url.search = u.search;
@@ -768,20 +765,20 @@ async function countDistinctAnsweredForUserPresentation(presentationId, userEmai
   } while(offset);
   return seen.size;
 }
+
 async function recalcAndDisplayProgress({ updateAirtable = false } = {}){
   try{
     ensureProgressBannerElement();
     const txt = document.getElementById("moduleProgressText");
     const bar = document.getElementById("moduleProgressBar");
-    const userEmail = (el.userEmail?.value || localStorage.getItem("trainingEmail") || "").trim();
+    const userEmail = getUserEmail();
     const total = getQuestionCount();
 
-    // use answered-any instead of correct-only
     const completed = await countDistinctAnsweredForUserPresentation(state.presentationId, userEmail);
 
     const pct = total ? Math.round((Math.min(completed,total) * 100)/total) : 0;
     if (txt) txt.textContent = `You have completed ${completed} of ${total} questions (${pct}%).`;
-    if (bar) { bar.style.width = pct + "%"; bar.style.background = "#3b82f6"; }
+    if (bar) { bar.style.width = pct + "%"; }
 
     if (updateAirtable){
       try { await updateCompletedCountForUserPresentation(userEmail, state.presentationId, completed); }
@@ -791,6 +788,7 @@ async function recalcAndDisplayProgress({ updateAirtable = false } = {}){
     console.warn("Progress banner update failed", e);
   }
 }
+
 
 function buildCorrectAnswerDisplay(fitbAnswers){
   try {
@@ -886,12 +884,17 @@ async function upsertAnswerRecordWithWrongCount({
 /* ------------------ Resume / prior answers (for positioning only) --------- */
 
 async function loadExistingAnswersForUser(presentationId, userEmail){
-  // We keep this to support resume/progress counts, but NEVER render prior answers.
   if (!userEmail) return {};
+  const attempt = Number(state.currentAttempt || 1);
+
   const url = new URL(aBaseUrl());
   const e = s => String(s||"").replace(/'/g, "\\'");
-  url.searchParams.set("filterByFormula", `AND({UserEmail}='${e(userEmail)}',{PresentationId}='${e(presentationId)}')`);
+  url.searchParams.set(
+    "filterByFormula",
+    `AND({UserEmail}='${e(userEmail)}',{PresentationId}='${e(presentationId)}',{Attempt}=${attempt})`
+  );
   url.searchParams.set("pageSize", "100");
+
   let all = [];
   let offset;
   do {
@@ -904,8 +907,10 @@ async function loadExistingAnswersForUser(presentationId, userEmail){
 
     if (offset){
       const u = new URL(aBaseUrl());
-      const e2 = s => String(s||"").replace(/'/g, "\\'");
-      u.searchParams.set("filterByFormula", `AND({UserEmail}='${e2(userEmail)}',{PresentationId}='${e2(presentationId)}')`);
+      u.searchParams.set(
+        "filterByFormula",
+        `AND({UserEmail}='${e(userEmail)}',{PresentationId}='${e(presentationId)}',{Attempt}=${attempt})`
+      );
       u.searchParams.set("pageSize", "100");
       url.search = u.search;
     }
@@ -915,17 +920,37 @@ async function loadExistingAnswersForUser(presentationId, userEmail){
   for (const r of all) {
     const f = r.fields || {};
     if (f.QuestionId) {
-      map[f.QuestionId] = { answer: f.Answer, isCorrect: !!f.IsCorrect };
+      map[f.QuestionId] = { answer: f.Answer, isCorrect: !!f.IsCorrect, recordId: r.id };
     }
   }
   return map;
 }
+
 async function initQuizAttempt() {
-  const userEmail = (el.userEmail?.value || localStorage.getItem("trainingEmail") || "").trim();
-  const attempt = await getOrCreateAttemptNumber(userEmail, state.presentationId);
-  state.currentAttempt = attempt;
-  console.log("Starting attempt", attempt);
+  const userEmail = getUserEmail();
+  if (!userEmail || !state.presentationId) {
+    console.warn("initQuizAttempt: missing userEmail or presentationId");
+    state.currentAttempt = 1;
+    return 1;
+  }
+
+  // Try to restore previous attempt for this user+deck
+  const key = `attempt:${userEmail}:${state.presentationId}`;
+  const stored = Number(localStorage.getItem(key) || 0);
+  if (stored) {
+    state.currentAttempt = stored;
+    return stored;
+  }
+
+  // Otherwise allocate a new one and remember it
+  const next = await getNextAttemptNumber(userEmail, state.presentationId);
+  state.currentAttempt = next;
+  localStorage.setItem(key, String(next));
+  return next;
 }
+
+
+
 
 function nextUnansweredIndex(){
   const maxIdx = Object.keys(state.quizByIndex).map(k=>parseInt(k,10)).filter(n=>!Number.isNaN(n));
@@ -936,7 +961,7 @@ function nextUnansweredIndex(){
     const has = !!(state.answers[q.questionId]);
     if (!has) return i;
   }
-  return 0;
+  return Math.max(0, total - 1);
 }
 async function getOrCreateAttemptNumber(userEmail, presentationId) {
   const e = s => String(s || "").replace(/'/g, "\\'");
@@ -1063,26 +1088,6 @@ async function updateCompletedCountForUserPresentation(userEmail, presentationId
   }
 }
 
-async function recalcAndDisplayProgress({ updateAirtable = false } = {}){
-  try{
-    ensureProgressBannerElement();
-    const txt = document.getElementById("moduleProgressText");
-    const bar = document.getElementById("moduleProgressBar");
-    const userEmail = (el.userEmail?.value || localStorage.getItem("trainingEmail") || "").trim();
-    const total = getQuestionCount();
-    const correct = await countDistinctCorrectForUserPresentation(state.presentationId, userEmail);
-    const pct = total ? Math.round((Math.min(correct,total) * 100)/total) : 0;
-    if (txt) txt.textContent = `You have completed ${correct} of ${total} questions (${pct}%).`;
-    if (bar) { bar.style.width = pct + "%"; bar.style.background = "#3b82f6"; }
-
-    if (updateAirtable){
-      try{ await updateCompletedCountForUserPresentation(userEmail, state.presentationId, correct); } catch(e){ console.warn("Completed Count sync failed", e); }
-    }
-  } catch(e){
-    console.warn("Progress banner update failed", e);
-  }
-}
-
 /* ------------------ Ensure slide list at least covers questions ----------- */
 
 function ensureSlidesForQuestions(){
@@ -1094,4 +1099,101 @@ function ensureSlidesForQuestions(){
   while (state.slides.length < qCount) {
     state.slides.push({ objectId: state.presentationId, title: `Q${state.slides.length+1}`});
   }
+}
+// --- Attempt helpers ---------------------------------------------------------
+
+async function getNextAttemptNumber(userEmail, presentationId) {
+  const e = s => String(s || "").replace(/'/g, "\\'");
+  const url = new URL(aBaseUrl());
+  url.searchParams.set(
+    "filterByFormula",
+    `AND({UserEmail}='${e(userEmail)}',{PresentationId}='${e(presentationId)}')`
+  );
+  url.searchParams.set("pageSize", "100");
+
+  let maxAttempt = 0;
+  let offset;
+  do {
+    if (offset) url.searchParams.set("offset", offset);
+    const res = await fetch(url.toString(), { headers: aHeaders() });
+    if (!res.ok) throw new Error(`Failed to fetch attempts: ${res.status}`);
+    const data = await res.json();
+    for (const r of (data.records || [])) {
+      const a = Number(r?.fields?.Attempt || 1);
+      if (!Number.isNaN(a) && a > maxAttempt) maxAttempt = a;
+    }
+    offset = data.offset;
+    if (offset) {
+      const u = new URL(aBaseUrl());
+      u.searchParams.set(
+        "filterByFormula",
+        `AND({UserEmail}='${e(userEmail)}',{PresentationId}='${e(presentationId)}')`
+      );
+      u.searchParams.set("pageSize", "100");
+      url.search = u.search;
+    }
+  } while (offset);
+
+  return maxAttempt + 1;
+}
+
+
+
+// --- Retake: start new attempt, clear local state, re-render -----------------
+(function hideRetakeUntilEmail(){
+  const btn = document.getElementById('retakeQuizBtn');
+  if (!btn) return;
+  const hasEmail = !!getUserEmail();
+  btn.style.display = hasEmail ? 'inline-block' : 'none';
+})();
+
+async function startNewAttempt() {
+  const userEmail = getUserEmail();
+  if (!userEmail) {
+    pulse("Enter your email to retake.", "warn");
+    return;
+  }
+  try {
+ const next = await getNextAttemptNumber(userEmail, state.presentationId);
+ state.currentAttempt = next;
+ localStorage.setItem(`attempt:${userEmail}:${state.presentationId}`, String(next));            // bumps Attempt
+    state.answers = {};                     // clear in-memory map
+    state.i = 0;                            // go back to first question
+    clearCurrentQuestionUISelections();     // remove any radio/inputs currently selected
+ const pageId = state.slides[0]?.objectId || "";
+ showEmbed(state.presentationId, pageId);
+ render();   
+    await recalcAndDisplayProgress({ updateAirtable: true }); // progress -> 0/Total
+    pulse(`New attempt started (#${state.currentAttempt}). Good luck!`, "info");
+  } catch (e) {
+    console.error("startNewAttempt failed", e);
+    pulse("Could not start a new attempt. Please try again.", "error");
+  }
+}
+
+// Utility to clear current question inputs safely (MC + FITB)
+function clearCurrentQuestionUISelections() {
+  try {
+    // clear radios
+    document.querySelectorAll('input[type="radio"][name="mcOption"]').forEach(r => { r.checked = false; });
+    // clear FITB text input(s)
+    document.querySelectorAll('input[data-fitb], textarea[data-fitb]').forEach(i => { i.value = ""; });
+    // if you use a specific id for FITB, clear it too:
+    const fitb = document.getElementById('fitbInput');
+    if (fitb) fitb.value = "";
+  } catch (e) {
+    console.warn("clearCurrentQuestionUISelections skipped:", e);
+  }
+}
+
+// --- Wire the button (call this once after DOM is ready / deck loaded) -------
+
+function wireRetakeButton() {
+  const btn = document.getElementById('retakeQuizBtn');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    const ok = confirm("Start a new attempt? Your prior attempts are kept for history, and this run will be Attempt #" + (Number(state.currentAttempt||0)+1) + ".");
+    if (!ok) return;
+    await startNewAttempt();
+  });
 }
