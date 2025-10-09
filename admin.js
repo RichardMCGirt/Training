@@ -1524,3 +1524,475 @@ async function normalizeOrdersForModule(moduleName, { dryRun = false } = {}) {
     });
   }
 })();
+
+// =============================
+// Bulk Import / Export (CSV)
+// =============================
+(function(){
+  "use strict";
+
+  // === Columns used in template + mapping ===
+  const CSV_COLUMNS = [
+    "Type",                       // "MC" or "FITB"
+    "Question",
+    "Options (JSON)",             // MC only: ["A","B","C"]
+    "Correct",                    // MC only: exact option text
+    "FITB Answers (JSON)",        // FITB only: ["foo","bar"]
+    "FITB Use Regex",             // true/false
+    "FITB Case Sensitive",        // true/false
+    "Module",
+    "Slide ID",
+    "Order",                      // number; if blank, we’ll auto-append
+    "Active",                     // true/false
+    "Required",                   // true/false
+    "QuestionId"                  // if blank, importer will auto-generate
+  ];
+
+  // === DOM
+  const dom = {
+    root:              document.getElementById("bulk-root"),
+    downloadTemplate:  document.getElementById("bulk-download-template"),
+    exportBtn:         document.getElementById("bulk-export"),
+    file:              document.getElementById("bulk-file"),
+    parseBtn:          document.getElementById("bulk-parse"),
+    status:            document.getElementById("bulk-status"),
+    previewWrap:       document.getElementById("bulk-preview-wrap"),
+    dryRun:            document.getElementById("bulk-dryrun"),
+    runBtn:            document.getElementById("bulk-run"),
+  };
+
+  if (!dom.root) return; // panel not on this page
+
+  // === Utilities
+  const toBool = (v) => {
+    const s = String(v ?? "").trim().toLowerCase();
+    return s === "1" || s === "true" || s === "yes" || s === "y";
+  };
+
+  const safeJSON = (s) => {
+    try {
+      const v = JSON.parse(String(s ?? "").trim());
+      return Array.isArray(v) ? v : [];
+    } catch { return []; }
+  };
+
+  function genQuestionId(prefix="q"){ return `${prefix}_${Math.random().toString(36).slice(2,8)}`; }
+
+  function downloadBlob(filename, text){
+    const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 0);
+  }
+
+  // Robust CSV stringifier (RFC4180-ish)
+  function toCsvValue(v){
+    const s = v == null ? "" : String(v);
+    if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  }
+  function toCsv(rows){
+    const head = CSV_COLUMNS.map(toCsvValue).join(",") + "\r\n";
+    const body = rows.map(r => CSV_COLUMNS.map(k => toCsvValue(r[k])).join(",")).join("\r\n");
+    return head + body + "\r\n";
+  }
+
+  // Tiny CSV parser that respects quotes and commas/CRLFs inside quotes
+  function parseCsv(text){
+    const out = [];
+    let row = [];
+    let val = "";
+    let i = 0, inQuotes = false;
+    while (i < text.length){
+      const ch = text[i];
+
+      if (inQuotes){
+        if (ch === '"'){
+          if (text[i+1] === '"'){ val += '"'; i += 2; continue; }
+          inQuotes = false; i++; continue;
+        }
+        val += ch; i++; continue;
+      }
+
+      if (ch === '"'){ inQuotes = true; i++; continue; }
+      if (ch === ","){ row.push(val); val = ""; i++; continue; }
+      if (ch === "\r"){
+        if (text[i+1] === "\n") i++;
+        row.push(val); out.push(row); row = []; val = ""; i++; continue;
+      }
+      if (ch === "\n"){ row.push(val); out.push(row); row = []; val = ""; i++; continue; }
+
+      val += ch; i++;
+    }
+    // last value
+    row.push(val);
+    // only push if not a trailing empty row
+    if (row.length > 1 || (row.length === 1 && row[0] !== "")) out.push(row);
+    return out;
+  }
+
+  function headerIndexMap(headerRow){
+    const map = Object.create(null);
+    CSV_COLUMNS.forEach((name) => {
+      const idx = headerRow.findIndex(h => String(h).trim().toLowerCase() === name.toLowerCase());
+      map[name] = idx;
+    });
+    return map;
+  }
+
+  function rowToObj(headerMap, cells){
+    const obj = {};
+    CSV_COLUMNS.forEach((name) => {
+      const i = headerMap[name];
+      obj[name] = (i >= 0 ? cells[i] : "");
+    });
+    return obj;
+  }
+
+  function normalizeRow(r){
+    const Type = String(r["Type"] || "").toUpperCase().trim();
+    const Question = String(r["Question"] || "").trim();
+    const Module = String(r["Module"] || "").trim();
+    const Slide = String(r["Slide ID"] || "").trim();
+    const Order = Number(r["Order"] || "");
+    const Active = toBool(r["Active"]);
+    const Required = ("Required" in r) ? toBool(r["Required"]) : true;
+    const QuestionId = String(r["QuestionId"] || "").trim();
+
+    let fields = {
+      "Type": (Type === "FITB" ? "FITB" : "MC"),
+      "Question": Question,
+      "Module": Module || undefined,
+      "Slide ID": Slide || "",
+      "Order": (Number.isFinite(Order) && Order > 0) ? Order : undefined,
+      "Active": Active,
+      "Required": Required,
+      "QuestionId": QuestionId || genQuestionId("q")
+    };
+
+    if (fields["Type"] === "MC"){
+      const opts = safeJSON(r["Options (JSON)"]);
+      const correct = String(r["Correct"] || "");
+      fields["Options (JSON)"] = JSON.stringify(opts);
+      fields["Correct"] = correct || "";
+      fields["FITB Answers (JSON)"] = undefined;
+      fields["FITB Use Regex"] = undefined;
+      fields["FITB Case Sensitive"] = undefined;
+    } else {
+      const answers = safeJSON(r["FITB Answers (JSON)"]);
+      fields["FITB Answers (JSON)"] = JSON.stringify(answers);
+      fields["FITB Use Regex"] = toBool(r["FITB Use Regex"]);
+      fields["FITB Case Sensitive"] = toBool(r["FITB Case Sensitive"]);
+      fields["Options (JSON)"] = undefined;
+      fields["Correct"] = undefined;
+    }
+    return fields;
+  }
+
+  // Build a fast lookup for existing questions by QuestionId
+  function buildExistingIndex(){
+    const idx = Object.create(null);
+    (Array.isArray(state.rows) ? state.rows : []).forEach(r => {
+      const qid = String(r?.fields?.QuestionId || "").trim();
+      if (qid) idx[qid.toLowerCase()] = r.id;
+    });
+    return idx;
+  }
+
+  // ============ EXPORT ============
+  async function onExport(){
+    try {
+      // Ensure freshest view
+      await refreshList(); // uses your existing listAll → state.rows
+      const rows = (state.rows || []).map(r => {
+        const f = r.fields || {};
+        return {
+          "Type": String(f["Type"] || ""),
+          "Question": String(f["Question"] || ""),
+          "Options (JSON)": String(f["Options (JSON)"] || ""),
+          "Correct": String(f["Correct"] || ""),
+          "FITB Answers (JSON)": String(f["FITB Answers (JSON)"] || ""),
+          "FITB Use Regex": String(f["FITB Use Regex"] ?? ""),
+          "FITB Case Sensitive": String(f["FITB Case Sensitive"] ?? ""),
+          "Module": String(f["Module"] || ""),
+          "Slide ID": String(f["Slide ID"] || ""),
+          "Order": String(f["Order"] ?? ""),
+          "Active": String(f["Active"] ?? ""),
+          "Required": String(f["Required"] ?? ""),
+          "QuestionId": String(f["QuestionId"] || "")
+        };
+      });
+      const csv = toCsv(rows);
+      downloadBlob(`questions-export-${Date.now()}.csv`, csv);
+      toast?.("Exported.", "ok");
+    } catch (e){
+      console.error(e);
+      toast?.("Export failed.", "bad");
+    }
+  }
+
+  // ============ TEMPLATE ============
+  function onDownloadTemplate(){
+    const example = [{
+      "Type": "MC",
+      "Question": "What color is the sky?",
+      "Options (JSON)": '["Blue","Green","Red"]',
+      "Correct": "Blue",
+      "FITB Answers (JSON)": "",
+      "FITB Use Regex": "",
+      "FITB Case Sensitive": "",
+      "Module": "Basics",
+      "Slide ID": "",
+      "Order": "1",
+      "Active": "true",
+      "Required": "true",
+      "QuestionId": "q_example123"
+    },{
+      "Type": "FITB",
+      "Question": "_____ is the capital of France.",
+      "Options (JSON)": "",
+      "Correct": "",
+      "FITB Answers (JSON)": '["Paris"]',
+      "FITB Use Regex": "false",
+      "FITB Case Sensitive": "false",
+      "Module": "Geography",
+      "Slide ID": "",
+      "Order": "2",
+      "Active": "true",
+      "Required": "true",
+      "QuestionId": ""
+    }];
+    const csv = toCsv(example);
+    downloadBlob("questions-template.csv", csv);
+  }
+
+  // ============ PREVIEW / IMPORT ============
+  let parsedItems = [];   // normalized Airtable fields per row
+  let rawRows = [];       // original row objects (for preview)
+
+  function renderPreview(rows, errs){
+    if (!rows || rows.length === 0){
+      dom.previewWrap.innerHTML = `<div class="muted">No rows found in CSV.</div>`;
+      dom.runBtn.disabled = true;
+      return;
+    }
+    const header = `
+      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div class="muted small">${rows.length} row(s) parsed.</div>
+        <div class="legend">
+          <span class="badge all">create</span>
+          <span class="badge some">update</span>
+          <span class="badge none">error</span>
+        </div>
+      </div>`;
+
+    // Build existing index by QuestionId to label row intent
+    const idx = buildExistingIndex();
+
+    const tableHead = `
+      <thead>
+        <tr>
+          <th style="text-align:left;padding:6px 8px">Action</th>
+          <th style="text-align:left;padding:6px 8px">QuestionId</th>
+          <th style="text-align:left;padding:6px 8px">Type</th>
+          <th style="text-align:left;padding:6px 8px">Question</th>
+          <th style="text-align:left;padding:6px 8px">Module</th>
+          <th style="text-align:left;padding:6px 8px">Order</th>
+          <th style="text-align:left;padding:6px 8px">Error</th>
+        </tr>
+      </thead>`;
+
+    const bodyRows = rows.map((r, i) => {
+      const qid = String(r?.fields?.["QuestionId"] || "").trim();
+      const err = errs[i] || "";
+      let action = "create";
+      let cls = "all";
+      if (qid && idx[qid.toLowerCase()]) { action = "update"; cls = "some"; }
+      if (err) { action = "error"; cls = "none"; }
+
+      const f = r.fields || {};
+      const orderDisp = (f["Order"] != null) ? String(f["Order"]) : "auto";
+
+      return `<tr>
+        <td class="badge ${cls}" style="padding:6px 8px;text-transform:capitalize">${action}</td>
+        <td style="padding:6px 8px">${qid || "—"}</td>
+        <td style="padding:6px 8px">${f["Type"] || ""}</td>
+        <td style="padding:6px 8px">${(f["Question"] || "").slice(0,100)}</td>
+        <td style="padding:6px 8px">${f["Module"] || ""}</td>
+        <td style="padding:6px 8px">${orderDisp}</td>
+        <td style="padding:6px 8px;color:#b91c1c">${err}</td>
+      </tr>`;
+    }).join("");
+
+    dom.previewWrap.innerHTML = header + `
+      <div style="overflow:auto;border:1px solid #e5e7eb;border-radius:10px">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          ${tableHead}
+          <tbody>${bodyRows}</tbody>
+        </table>
+      </div>
+    `;
+
+    // Enable import if there is at least one non-error row
+    const anyOk = errs.some(Boolean) ? errs.some(e => !e) : rows.length > 0;
+    dom.runBtn.disabled = !anyOk;
+  }
+
+  async function onPreview(){
+    dom.status.textContent = "Reading file…";
+    dom.status.className = "muted small";
+    dom.runBtn.disabled = true;
+    dom.previewWrap.innerHTML = `<div class="muted">Parsing…</div>`;
+    parsedItems = [];
+    rawRows = [];
+
+    const file = dom.file?.files?.[0];
+    if (!file){
+      dom.previewWrap.innerHTML = `<div class="muted">Choose a CSV file first.</div>`;
+      dom.status.textContent = "No file selected.";
+      return;
+    }
+
+    const text = await file.text();
+    const rows = parseCsv(text);
+    if (!rows.length){
+      dom.previewWrap.innerHTML = `<div class="muted">Empty CSV.</div>`;
+      dom.status.textContent = "Nothing to preview.";
+      return;
+    }
+    const header = rows[0];
+    const map = headerIndexMap(header);
+
+    // Validate header coverage
+    const missing = CSV_COLUMNS.filter(k => map[k] < 0);
+    if (missing.length){
+      dom.previewWrap.innerHTML = `<div class="bad">Missing required header(s): ${missing.join(", ")}</div>`;
+      dom.status.textContent = "Fix the headers and try again.";
+      return;
+    }
+
+    // Convert to list of Airtable field maps + collect row-level validation errors
+    const errors = [];
+    for (let i = 1; i < rows.length; i++){
+      const obj = rowToObj(map, rows[i]);
+      const fields = normalizeRow(obj);
+
+      // Basic validation
+      let err = "";
+      if (!fields["Question"]) err = "Question is required.";
+      if (fields["Type"] === "MC"){
+        const arr = safeJSON(obj["Options (JSON)"]);
+        if (!arr.length) err = err || "MC requires Options (JSON) with at least 1 option.";
+      } else {
+        const a = safeJSON(obj["FITB Answers (JSON)"]);
+        if (!a.length) err = err || "FITB requires FITB Answers (JSON) with at least 1 answer.";
+      }
+
+      parsedItems.push({ fields });
+      rawRows.push(obj);
+      errors.push(err);
+    }
+
+    dom.status.textContent = "Preview ready.";
+    renderPreview(parsedItems, errors);
+  }
+
+  // Batch helper for PATCH/POST (10 per request)
+  async function batchWrite(updates, method){
+    const BATCH = 10;
+    let written = 0;
+    for (let i = 0; i < updates.length; i += BATCH) {
+      const chunk = updates.slice(i, i + BATCH);
+      const body = (method === "PATCH")
+        ? { records: chunk.map(({ id, fields }) => ({ id, fields })), typecast: true }
+        : { records: chunk.map(({ fields }) => ({ fields })), typecast: true };
+
+      const res = await fetch(baseUrl(), {
+        method,
+        headers: qHeaders ? qHeaders() : headers(), // prefer Questions headers if available
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) throw new Error(`${method} failed: HTTP ${res.status} – ${await res.text().catch(()=>"(no body)")}`);
+      const data = await res.json();
+      written += (data.records || []).length;
+    }
+    return written;
+  }
+
+  async function onImport(){
+    try {
+      dom.status.textContent = "Importing…";
+      dom.status.className = "muted small";
+      dom.runBtn.disabled = true;
+
+      // Always refresh to get latest state.rows → for upsert by QuestionId
+      await refreshList();
+
+      const idx = buildExistingIndex();
+      const creates = [];
+      const updates = [];
+
+      // Auto-fill Order if missing (append to module’s max)
+      const maxByModule = Object.create(null);
+      (state.rows || []).forEach(r => {
+        const f = r.fields || {};
+        const m = String(f.Module || "");
+        const ord = Number(f.Order || 0);
+        if (!maxByModule[m]) maxByModule[m] = 0;
+        if (Number.isFinite(ord) && ord > maxByModule[m]) maxByModule[m] = ord;
+      });
+
+      for (const item of parsedItems){
+        const f = item.fields;
+        // auto-assign order if missing
+        if (f["Order"] == null){
+          const m = String(f["Module"] || "");
+          const cur = maxByModule[m] || 0;
+          maxByModule[m] = cur + 1;
+          f["Order"] = maxByModule[m];
+        }
+
+        const qid = String(f["QuestionId"] || "").trim().toLowerCase();
+        if (qid && idx[qid]){
+          updates.push({ id: idx[qid], fields: f });
+        } else {
+          creates.push({ fields: f });
+        }
+      }
+
+      if (dom.dryRun?.checked){
+        dom.status.textContent = `Dry-run: would create ${creates.length}, update ${updates.length}.`;
+        dom.status.className = "ok";
+        dom.runBtn.disabled = false; // allow re-run after dry-run toggle off
+        return;
+      }
+
+      // Write
+      let written = 0;
+      if (creates.length) written += await batchWrite(creates, "POST");
+      if (updates.length) written += await batchWrite(updates, "PATCH");
+
+      dom.status.textContent = `Imported ${written} record(s): created ${creates.length}, updated ${updates.length}.`;
+      dom.status.className = "ok";
+
+      await refreshList(); // show latest list
+      toast?.("Import complete", "ok");
+
+    } catch (e){
+      console.error(e);
+      dom.status.textContent = e?.message || "Import failed.";
+      dom.status.className = "bad";
+      dom.runBtn.disabled = false;
+    }
+  }
+
+  // Wire events
+  dom.downloadTemplate?.addEventListener("click", onDownloadTemplate);
+  dom.exportBtn?.addEventListener("click", onExport);
+  dom.parseBtn?.addEventListener("click", onPreview);
+  dom.runBtn?.addEventListener("click", onImport);
+
+})();

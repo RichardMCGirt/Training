@@ -217,6 +217,46 @@
       </div>
     </section>
   </div>
+  <section class="card" id="bulk-root" style="margin-top:16px">
+  <div class="row" style="justify-content:space-between;align-items:center">
+    <h2>Bulk Import / Export</h2>
+    <div class="row" style="gap:8px">
+      <button id="bulk-download-template" class="btn" type="button" title="Download CSV template">Download Template</button>
+      <button id="bulk-export" class="btn" type="button" title="Export currently loaded questions to CSV">Export Current</button>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="field">
+    <label class="section-title">Upload CSV</label>
+    <div class="inline">
+      <input id="bulk-file" class="grow" type="file" accept=".csv,text/csv" />
+      <button id="bulk-parse" class="btn" type="button">Preview</button>
+    </div>
+    <p class="hint small">
+      CSV must use the header row exactly as in the template (see below). Import will
+      <strong>upsert</strong> by <code>QuestionId</code>: if present and found → update; otherwise → create.
+    </p>
+  </div>
+
+  <div class="divider"></div>
+
+  <div id="bulk-status" class="muted small">—</div>
+
+  <div id="bulk-preview-wrap" class="stage" style="margin-top:10px">
+    <div class="muted">No file loaded.</div>
+  </div>
+
+  <div class="sticky-actions">
+    <label class="inline" style="margin-right:auto">
+      <input id="bulk-dryrun" type="checkbox" checked>
+      <span>Dry-run (validate only)</span>
+    </label>
+    <button id="bulk-run" class="btn primary" type="button" disabled>Import</button>
+  </div>
+</section>
+
 
   <div id="toast" class="toast"><span id="toastMsg">Saved</span></div>
 
