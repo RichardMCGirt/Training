@@ -597,6 +597,7 @@ async function onDeckLoaded(presentationId, slidesArray){
 
   if (el.prevBtn) el.prevBtn.disabled = state.i <= 0;
   if (el.nextBtn) el.nextBtn.disabled = state.slides.length <= 1;
+  await initQuizAttempt();
 
   // Load prior answers ONLY to position progress (never to prefill UI)
   try {
@@ -628,6 +629,7 @@ async function onDeckLoaded(presentationId, slidesArray){
 /* If another script fires this custom event, we hook in */
 document.addEventListener("deck:loaded", (ev) => {
   const { id, slides } = (ev.detail || {});
+  
   onDeckLoaded(id, slides);
 });
 
@@ -712,7 +714,7 @@ async function submitAnswer() {
       timestamp: new Date().toISOString()
     });
 
-    pulse(isCorrect ? "Saved ✓" : "Saved (wrong)", isCorrect ? "ok" : "warn");
+    pulse(isCorrect ? "Saved ✓" : "Incorrect)", isCorrect ? "Correct" : "warn");
     try { await recalcAndDisplayProgress({ updateAirtable: true }); } catch {}
   } catch (e) {
     console.error("Save failed", e);
@@ -805,15 +807,17 @@ async function upsertAnswerRecordWithWrongCount({
   answer,
   isCorrect,
   correctAnswer,
-  questionText,   // NEW
-  type,           // NEW: "MC" | "FITB"
-  timestamp       // NEW: ISO string
+  questionText,
+  type,
+  timestamp
 }){
-  // 1) Look up existing record for this (user, deck, question)
+  const attempt = Number(state.currentAttempt || 1);
+
+  // 1) Look up existing record for this (user, deck, question, attempt)
   const url = new URL(aBaseUrl());
   const e = s => String(s||"").replace(/'/g, "\\'");
   url.searchParams.set("filterByFormula",
-    `AND({UserEmail}='${e(userEmail)}',{PresentationId}='${e(presentationId)}',{QuestionId}='${e(questionId)}')`
+    `AND({UserEmail}='${e(userEmail)}',{PresentationId}='${e(presentationId)}',{QuestionId}='${e(questionId)}',{Attempt}=${attempt})`
   );
   url.searchParams.set("pageSize", "1");
 
@@ -837,6 +841,7 @@ async function upsertAnswerRecordWithWrongCount({
       [ANSWER_FIELDS.WRONG_ATTEMPTS_FIELD]: wrongAttempts,
       IsCorrect: existingIsCorrect ? true : !!isCorrect,
       [ANSWER_FIELDS.RESULT_FIELD]: resultStr,
+      Attempt: attempt, // NEW
 
       [ANSWER_FIELDS.TIMESTAMP_FIELD]: timestamp,
       [ANSWER_FIELDS.QUESTION_FIELD]: questionText,
@@ -852,7 +857,7 @@ async function upsertAnswerRecordWithWrongCount({
     return;
   }
 
-  // 2) Create record if not found
+  // 2) Create record if not found (for this attempt)
   const createFields = {
     UserEmail: userEmail,
     PresentationId: presentationId,
@@ -862,8 +867,8 @@ async function upsertAnswerRecordWithWrongCount({
     [ANSWER_FIELDS.CORRECT_ANSWER_FIELD]: correctAnswer,
     [ANSWER_FIELDS.WRONG_ATTEMPTS_FIELD]: (!isCorrect ? 1 : 0),
     [ANSWER_FIELDS.RESULT_FIELD]: isCorrect ? "Right" : "Wrong",
+    Attempt: attempt, // NEW
 
-    // NEW fields:
     [ANSWER_FIELDS.TIMESTAMP_FIELD]: timestamp,
     [ANSWER_FIELDS.QUESTION_FIELD]: questionText,
     [ANSWER_FIELDS.TYPE_FIELD]: type
@@ -876,6 +881,7 @@ async function upsertAnswerRecordWithWrongCount({
   });
   if (!res.ok) throw new Error(`Create failed: ${res.status} ${await res.text().catch(()=>"(no body)")}`);
 }
+
 
 /* ------------------ Resume / prior answers (for positioning only) --------- */
 
@@ -914,6 +920,12 @@ async function loadExistingAnswersForUser(presentationId, userEmail){
   }
   return map;
 }
+async function initQuizAttempt() {
+  const userEmail = (el.userEmail?.value || localStorage.getItem("trainingEmail") || "").trim();
+  const attempt = await getOrCreateAttemptNumber(userEmail, state.presentationId);
+  state.currentAttempt = attempt;
+  console.log("Starting attempt", attempt);
+}
 
 function nextUnansweredIndex(){
   const maxIdx = Object.keys(state.quizByIndex).map(k=>parseInt(k,10)).filter(n=>!Number.isNaN(n));
@@ -925,6 +937,28 @@ function nextUnansweredIndex(){
     if (!has) return i;
   }
   return 0;
+}
+async function getOrCreateAttemptNumber(userEmail, presentationId) {
+  const e = s => String(s || "").replace(/'/g, "\\'");
+  const url = new URL(aBaseUrl());
+  url.searchParams.set(
+    "filterByFormula",
+    `AND({UserEmail}='${e(userEmail)}',{PresentationId}='${e(presentationId)}')`
+  );
+  url.searchParams.set("pageSize", "100");
+
+  const res = await fetch(url.toString(), { headers: aHeaders() });
+  if (!res.ok) throw new Error("Failed to fetch attempts");
+  const data = await res.json();
+  const attempts = new Set();
+
+  (data.records || []).forEach(r => {
+    const a = Number(r?.fields?.Attempt || 1);
+    if (!isNaN(a)) attempts.add(a);
+  });
+
+  const maxAttempt = attempts.size ? Math.max(...attempts) : 0;
+  return maxAttempt + 1; // next attempt number
 }
 
 function getQuestionCount(){
