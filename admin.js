@@ -1,39 +1,49 @@
+// ================== Admin – Questions & Assignments (Improved) ==================
+// This version auto-computes Order, safely handles empty/active flags, and adds
+// one-click "Normalize Orders" (per-module or all modules) without breaking training.
+
 // ========= Airtable Config =========
 const AIRTABLE = {
   API_KEY: "patTGK9HVgF4n1zqK.cbc0a103ecf709818f4cd9a37e18ff5f68c7c17f893085497663b12f2c600054",
   BASE_ID: "app3rkuurlsNa7ZdQ",
+
+  // Questions table
   TABLE_ID: "tblbf2TwwlycoVvQq",
+
+  // Titles/Users table (for module assignments)
   TITLES_TABLE_ID: "tblppx6qNXXNJL7ON",
   TITLES_FIELD_NAME: "Title",
   TITLES_ASSIGNED_FIELD: "Assigned Modules",
   TITLES_MAPPING_FIELD: "Assigned Modules Mapping"
 };
 
-// ===== Airtable config (Questions table) =====
+// ===== Airtable config (Questions table) – reused helpers =====
 const QUESTIONS_AT = {
-  API_KEY:        'patTGK9HVgF4n1zqK.cbc0a103ecf709818f4cd9a37e18ff5f68c7c17f893085497663b12f2c600054',         // e.g. 'patXXXX...'
-  BASE_ID:        'app3rkuurlsNa7ZdQ',              // e.g. 'appXXXX...'
-  TABLE_ID:       'tblbf2TwwlycoVvQq',   // e.g. 'tblXXXX...'
+  API_KEY: AIRTABLE.API_KEY,
+  BASE_ID: AIRTABLE.BASE_ID,
+  TABLE_ID: AIRTABLE.TABLE_ID,
 };
 
 function qBaseUrl(){
   return `https://api.airtable.com/v0/${encodeURIComponent(QUESTIONS_AT.BASE_ID)}/${encodeURIComponent(QUESTIONS_AT.TABLE_ID)}`;
 }
-
 function qHeaders(){
-  return {
-    'Authorization': `Bearer ${QUESTIONS_AT.API_KEY}`,
-    'Content-Type': 'application/json'
-  };
+  return { 'Authorization': `Bearer ${QUESTIONS_AT.API_KEY}`, 'Content-Type': 'application/json' };
 }
-
 
 // ========= Tiny DOM Helpers =========
 const $  = sel => document.querySelector(sel);
 const $$ = sel => Array.from(document.querySelectorAll(sel));
-// ===== Randomization settings =====
-const RANDOMIZE_QUESTIONS = true; // toggle on/off
+function esc(s){ return String(s ?? "").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[m])); }
+const asBool = v => !!(v === true || v === "true" || v === 1 || v === "1" || v === "on");
+function safeParseJSON(v){ try { return JSON.parse(v); } catch { return Array.isArray(v) ? v : []; } }
+function parseListTextarea(text){ if (!text) return []; return String(text).split(/\r?\n|,/g).map(s => s.trim()).filter(Boolean); }
+function debounce(fn, ms=200){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; }
+function afEsc(s){ return String(s ?? "").replace(/'/g, "\\'"); }
+function norm(s){ return String(s||"").trim().toLowerCase(); }
 
+// ========= Randomization (display only; saving unaffected) =========
+const RANDOMIZE_QUESTIONS = true;
 function shuffleInPlace(a){
   for (let i = a.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -42,8 +52,192 @@ function shuffleInPlace(a){
   return a;
 }
 
+// Turn "firstname.lastname@vanirinstalledsales.com" -> "Firstname Lastname"
+function nameFromEmail(email) {
+  if (!email) return "";
+  const s = String(email).trim().toLowerCase();
+  const at = s.indexOf("@");
+  if (at <= 0) return email; // not an email, return as-is
+  let local = s.slice(0, at).split("+", 1)[0]; // drop +tag
+  let parts = local.split(/[._-]+/).filter(Boolean);
+  const titleCaseToken = (t) => t.replace(/(^|[-'])([a-z])/g, (_, p1, p2) => p1 + p2.toUpperCase());
+  if (parts.length === 0) return email;
+  if (parts.length === 1) return titleCaseToken(parts[0]);
+  return parts.map(titleCaseToken).join(" ");
+}
+
+// ========= Answers table (for "who got it wrong") =========
+const ANSWERS = {
+  API_KEY:  AIRTABLE.API_KEY,
+  BASE_ID:  AIRTABLE.BASE_ID,
+  TABLE_ID: "tblkz5HyZGpgO093S"
+};
+function answersHeaders(){ return { "Authorization": `Bearer ${ANSWERS.API_KEY}`, "Content-Type": "application/json" }; }
+function answersBaseUrl(){ return `https://api.airtable.com/v0/${ANSWERS.BASE_ID}/${encodeURIComponent(ANSWERS.TABLE_ID)}`; }
+
+// Fetch distinct users who answered a question wrong (fallback to all answers if correctness not stored)
+async function fetchWrongUsersByQuestion(questionText){
+  const url = new URL(answersBaseUrl());
+  const tryWrong = `AND({Question}='${afEsc(questionText)}', OR({Result}='Wrong', {Result}='Wrong'))`;
+  url.searchParams.set("pageSize", "100");
+  url.searchParams.set("filterByFormula", tryWrong);
+
+  const res1 = await fetch(url.toString(), { headers: answersHeaders() });
+  if (!res1.ok) throw new Error(`Answers fetch failed: HTTP ${res1.status} – ${await res1.text().catch(()=>"(no body)")}`);
+  const data1 = await res1.json();
+
+  let rows = data1?.records || [];
+  if (!rows.length){
+    const url2 = new URL(answersBaseUrl());
+    url2.searchParams.set("pageSize", "100");
+    url2.searchParams.set("filterByFormula", `({Question}='${afEsc(questionText)}')`);
+    const res2 = await fetch(url2.toString(), { headers: answersHeaders() });
+    if (!res2.ok) throw new Error(`Answers fetch failed: HTTP ${res2.status} – ${await res2.text().catch(()=>"(no body)")}`);
+    const data2 = await res2.json();
+    rows = data2?.records || [];
+  }
+  const seen = new Set();
+  const emails = [];
+  for (const r of rows){
+    const e = r?.fields?.UserEmail || r?.fields?.email || r?.fields?.Email || "";
+    if (e && !seen.has(e)) { seen.add(e); emails.push(e); }
+  }
+  return emails;
+}
+function showWrongUsersModal(questionText, emails){
+  let modal = document.getElementById("wrongUsersModal");
+  if (!modal){
+    modal = document.createElement("div");
+    modal.id = "wrongUsersModal";
+    modal.style.position = "fixed";
+    modal.style.inset = "0";
+    modal.style.background = "rgba(0,0,0,0.4)";
+    modal.style.zIndex = "9999";
+    modal.style.display = "flex";
+    modal.style.alignItems = "center";
+    modal.style.justifyContent = "center";
+    modal.innerHTML = `
+      <div style="background:white; max-width:520px; width:92%; border-radius:12px; box-shadow:0 8px 24px rgba(0,0,0,.2);">
+        <div style="padding:14px 16px; border-bottom:1px solid #eee; display:flex; align-items:center; justify-content:space-between;">
+          <strong>People who got it wrong</strong>
+          <button id="wrongUsersClose" class="btn btn-ghost">×</button>
+        </div>
+        <div style="padding:14px 16px;">
+          <div class="muted small" style="margin-bottom:8px;">${questionText ? `Question: “${esc(questionText)}”` : ""}</div>
+          <ul id="wrongUsersList" class="wrong-users" style="margin:0; padding:0 0 8px 18px; max-height:360px; overflow:auto;"></ul>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    modal.addEventListener("click", (ev) => {
+      if (ev.target.id === "wrongUsersModal" || ev.target.id === "wrongUsersClose") modal.remove();
+    });
+  }
+  const list = modal.querySelector("#wrongUsersList");
+  list.innerHTML = emails.length
+    ? emails.map(raw => `<li title="${esc(raw)}">${esc(nameFromEmail(raw))}</li>`).join("")
+    : `<li class="muted">No matching answers found.</li>`;
+}
+
+// ========= Toast / Utils =========
+function toast(msg, kind="info", ms=1800){
+  let el = $("#toast"); let txt = $("#toastMsg");
+  if (!el) {
+    el = document.createElement("div"); el.id="toast"; el.className="toast";
+    el.innerHTML = `<span id="toastMsg"></span>`;
+    document.body.appendChild(el);
+    txt = $("#toastMsg");
+  }
+  txt.textContent = msg;
+  el.classList.add("show");
+  setTimeout(()=>el.classList.remove("show"), ms);
+}
+
+// ========= Airtable core helpers (CRUD) =========
+function headers(){ return { "Authorization": `Bearer ${AIRTABLE.API_KEY}`, "Content-Type":"application/json" }; }
+function baseUrl(tableId = AIRTABLE.TABLE_ID){
+  if (!AIRTABLE.BASE_ID || !tableId) throw new Error("Base URL undefined: missing BASE_ID or TABLE_ID");
+  return `https://api.airtable.com/v0/${AIRTABLE.BASE_ID}/${encodeURIComponent(tableId)}`;
+}
+async function readRecord(tableId, id){
+  const url = `${baseUrl(tableId)}/${encodeURIComponent(id)}`;
+  const res = await fetch(url, { headers: headers() });
+  if (!res.ok) throw new Error(`Read failed: HTTP ${res.status} – ${await res.text().catch(()=>"(no body)")}`);
+  return res.json();
+}
+async function listAll({ tableId = AIRTABLE.TABLE_ID, pageSize = 100, offset, sortField = "Order", sortDir = "asc", filterByFormula } = {}){
+  const ps = Math.max(1, Math.min(100, Number(pageSize) || 100));
+  const url = new URL(baseUrl(tableId));
+  url.searchParams.set("pageSize", String(ps));
+  if (sortField) { url.searchParams.set("sort[0][field]", sortField); url.searchParams.set("sort[0][direction]", sortDir); }
+  if (filterByFormula) url.searchParams.set("filterByFormula", filterByFormula);
+  if (offset) url.searchParams.set("offset", offset);
+  const res = await fetch(url.toString(), { headers: headers() });
+  if (!res.ok) throw new Error(`Fetch failed: HTTP ${res.status} – ${await res.text().catch(() => "(no body)")}`);
+  return res.json();
+}
+async function createRecord(fields){
+  const res = await fetch(baseUrl(), {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ records: [{ fields }], typecast: true })
+  });
+  if (!res.ok) throw new Error(`Create failed: HTTP ${res.status} – ${await res.text()}`);
+  return res.json();
+}
+async function updateRecord(id, fields){
+  const res = await fetch(baseUrl(), {
+    method: "PATCH",
+    headers: headers(),
+    body: JSON.stringify({ records: [{ id, fields }], typecast: true })
+  });
+  if (!res.ok) throw new Error(`Update failed: HTTP ${res.status} – ${await res.text()}`);
+  return res.json();
+}
+async function updateMany(records){
+  if (!records.length) return { records: [] };
+  const BATCH = 10;
+  const out = [];
+  for (let i=0;i<records.length;i+=BATCH){
+    const chunk = records.slice(i, i+BATCH);
+    const res = await fetch(baseUrl(), {
+      method: "PATCH",
+      headers: headers(),
+      body: JSON.stringify({ records: chunk, typecast: true })
+    });
+    if (!res.ok) throw new Error(`Batch update failed: HTTP ${res.status} – ${await res.text().catch(()=>"(no body)")}`);
+    const data = await res.json();
+    out.push(...(data.records||[]));
+  }
+  return { records: out };
+}
+async function deleteRecord(id){
+  const url = `${baseUrl()}/${encodeURIComponent(id)}`;
+  const res = await fetch(url, { method: "DELETE", headers: headers() });
+  if (!res.ok) throw new Error(`Delete failed: HTTP ${res.status} – ${await res.text().catch(()=>"(no body)")}`);
+  return res.json();
+}
+
+// ========= State =========
+const state = {
+  rows: [],                 // full questions
+  modules: new Set(),       // known module names (from existing rows)
+  manualModules: new Set(), // modules added via "+ Add new…"
+
+  // Titles/Assignments (right column)
+  titles: [],
+  selectedTitleIds: [],
+  assignedFieldName: AIRTABLE.TITLES_ASSIGNED_FIELD,
+  mappingFieldName:  AIRTABLE.TITLES_MAPPING_FIELD,
+  idsByTitleKey: Object.create(null),
+  titleKeyById: Object.create(null),
+
+  selectedModules: new Set(),
+};
+
 // ========= UI Map =========
 const ui = {
+  // list / filters
   search: $("#search"),
   fltActive: $("#fltActive"),
   fltInactive: $("#fltInactive"),
@@ -51,6 +245,12 @@ const ui = {
   listStatus: $("#listStatus"),
   moduleGroups: $("#moduleGroups"),
 
+  // normalize controls (in your HTML header toolbar)
+  btnNormalizeAll: $("#btnNormalizeAll"),
+  btnNormalizeForModule: $("#btnNormalizeForModule"),
+  normalizeStatus: $("#normalizeStatus"),
+
+  // left form
   questionType: $("#questionType"),
   slideId: $("#slideId"),
   order: $("#order"),
@@ -59,8 +259,7 @@ const ui = {
   btnAddOption: $("#btnAddOption"),
   btnClearOptions: $("#btnClearOptions"),
   options: $("#options"),
-  btnSave: $("#btnSave"),
-  btnReset: $("#btnReset"),
+  btnSaveQuestion: $("#btnSaveQuestion"),
 
   mcBlock: $("#mcBlock"),
   fitbBlock: $("#fitbBlock"),
@@ -74,10 +273,7 @@ const ui = {
   moduleInput: $("#moduleInput"),
   moduleChips: $("#moduleChips"),
 
-  toast: $("#toast"),
-  toastMsg: $("#toastMsg"),
-
-  // Titles & modules assignment UI
+  // titles/modules linker (if present on page)
   titleSearch: document.getElementById('titleSearch'),
   titleSelect: document.getElementById('titleSelect'),
   btnSelectAllTitles: document.getElementById('btnSelectAllTitles'),
@@ -97,92 +293,13 @@ const ui = {
   modTitleList: document.getElementById('modTitleList'),
 };
 
-// ========= Toast / Utils =========
-function toast(msg, kind="info", ms=1800){
-  try { ui.toastMsg.textContent = msg; ui.toast.classList.add("show"); setTimeout(()=>ui.toast.classList.remove("show"), ms); } catch {}
-}
-function esc(s){ return String(s ?? "").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[m])); }
-const asBool = v => !!(v === true || v === "true" || v === 1 || v === "1" || v === "on");
-function safeParseJSON(v){ try { return JSON.parse(v); } catch { return Array.isArray(v) ? v : []; } }
-function parseListTextarea(text){ if (!text) return []; return String(text).split(/\r?\n|,/g).map(s => s.trim()).filter(Boolean); }
-function debounce(fn, ms=200){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; }
-
-// Sorting
-function sortTitlesAZ(list){
-  return (Array.isArray(list) ? [...list] : []).sort((a,b)=>
-    String(a?.title ?? "").trim().localeCompare(String(b?.title ?? "").trim(), undefined, {sensitivity:"base"})
-  );
-}
-
-// Airtable helpers
-function headers(){ return { "Authorization": `Bearer ${AIRTABLE.API_KEY}`, "Content-Type":"application/json" }; }
-function baseUrl(tableId = AIRTABLE.TABLE_ID){
-  if (!AIRTABLE.BASE_ID || !tableId) throw new Error("Base URL undefined: missing BASE_ID or TABLE_ID");
-  return `https://api.airtable.com/v0/${AIRTABLE.BASE_ID}/${encodeURIComponent(tableId)}`;
-}
-async function readRecord(tableId, id){
-  const url = `${baseUrl(tableId)}/${encodeURIComponent(id)}`;
-  const res = await fetch(url, { headers: headers() });
-  if (!res.ok) throw new Error(`Read failed: HTTP ${res.status} – ${await res.text().catch(()=>"(no body)")}`);
-  return res.json();
-}
-async function listAll({ tableId = AIRTABLE.TABLE_ID, pageSize = 10, offset, sortField = "Order", sortDir = "asc", filterByFormula } = {}){
-  const ps = Math.max(1, Math.min(100, Number(pageSize) || 10));
-  const url = new URL(baseUrl(tableId));
-  url.searchParams.set("pageSize", String(ps));
-  if (sortField) { url.searchParams.set("sort[0][field]", sortField); url.searchParams.set("sort[0][direction]", sortDir); }
-  if (filterByFormula) url.searchParams.set("filterByFormula", filterByFormula);
-  if (offset) url.searchParams.set("offset", offset);
-  const res = await fetch(url.toString(), { headers: headers() });
-  if (!res.ok) throw new Error(`Fetch failed: HTTP ${res.status} – ${await res.text().catch(() => "(no body)")}`);
-  return res.json();
-}
-async function createRecord(fields){
-  const res = await fetch(baseUrl(), { method: "POST", headers: headers(), body: JSON.stringify({ records: [{ fields }], typecast: true })});
-  if (!res.ok) throw new Error(`Create failed: HTTP ${res.status} – ${await res.text()}`);
-  return res.json();
-}
-async function updateRecord(id, fields){
-  const res = await fetch(baseUrl(), { method: "PATCH", headers: headers(), body: JSON.stringify({ records: [{ id, fields }], typecast: true })});
-  if (!res.ok) throw new Error(`Update failed: HTTP ${res.status} – ${await res.text()}`);
-  return res.json();
-}
-async function deleteRecord(id){
-  const url = `${baseUrl()}/${encodeURIComponent(id)}`;
-  const res = await fetch(url, { method: "DELETE", headers: headers() });
-  if (!res.ok) throw new Error(`Delete failed: HTTP ${res.status} – ${await res.text().catch(()=>"(no body)")}`);
-  return res.json();
-}
-
-// ========= State =========
-const state = {
-  rows: [],
-  modules: new Set(),
-  manualModules: new Set(),
-
-  titles: [],
-  selectedTitleIds: [],
-  assignedFieldName: AIRTABLE.TITLES_ASSIGNED_FIELD,
-  mappingFieldName:  AIRTABLE.TITLES_MAPPING_FIELD,
-  idsByTitleKey: Object.create(null),
-  titleKeyById: Object.create(null),
-
-  selectedModules: new Set(),
-};
-
 // ========= Options editor =========
 function addOption(value = "") {
-  // Prefer a local esc fallback in case esc() isn't defined globally
   const _esc = (s) => String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   const row = document.createElement("div");
   row.className = "opt inline";
-  // NOTE: handle first for visibility; include hidden .opt-order for renumbering.
   row.innerHTML = `
     <span class="handle" title="Drag to reorder" aria-hidden="true">⋮⋮</span>
     <input type="text" class="optText grow" placeholder="" value="${(typeof esc==='function'?esc:_esc)(value)}" />
@@ -193,26 +310,14 @@ function addOption(value = "") {
     <button class="btn btn-danger del" title="Remove" type="button">×</button>
     <input type="hidden" class="opt-order" value="0" />
   `;
-
- 
-
-  // Delete (and keep indices in sync)
   row.querySelector(".del").addEventListener("click", () => {
     row.remove();
-    if (window.OptionDrag && typeof window.OptionDrag.renumber === "function") {
-      window.OptionDrag.renumber();
-    }
+    if (window.OptionDrag?.renumber) window.OptionDrag.renumber();
   });
-
-  // Append and return
   ui.options.appendChild(row);
-
-  // If you’re using the auto-inject handle helper, this is optional (we already added a handle)
   if (window.ensureOptionHandle) window.ensureOptionHandle(row);
-
   return row;
 }
-
 function getOptions(){
   return $$(".opt").map(row => {
     const text = row.querySelector(".optText").value.trim();
@@ -231,7 +336,6 @@ function setOptions(arr=[], correctText=""){
 
 // ========= Module helpers (Create/Edit) =========
 const ADD_NEW_VALUE = "__ADD_NEW__";
-
 function populateModuleSelect(modules){
   const sel = ui.moduleSelect; if (!sel) return;
   const list = Array.from(new Set([
@@ -244,7 +348,6 @@ function populateModuleSelect(modules){
     list.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join("") +
     `<option value="${ADD_NEW_VALUE}">+ Add new…</option>`;
 
-  // Quick-pick chips
   const chips = ui.moduleChips;
   if (chips){
     chips.innerHTML = list.map(m => `<span class="chip" data-m="${esc(m)}">${esc(m)}</span>`).join("");
@@ -255,7 +358,6 @@ function populateModuleSelect(modules){
     }));
   }
 }
-
 function currentModuleValue(){
   const selVal = ui.moduleSelect ? ui.moduleSelect.value : "";
   if (selVal === ADD_NEW_VALUE) {
@@ -263,7 +365,6 @@ function currentModuleValue(){
   }
   return selVal || "";
 }
-
 function toggleModuleNewVisibility(){
   const selVal = ui.moduleSelect ? ui.moduleSelect.value : "";
   if (!ui.moduleNewWrap) return;
@@ -285,26 +386,26 @@ function updateTypeVisibility(){
 
 // ========= Form helpers =========
 function genQuestionId(prefix="q"){ return `${prefix}_${Math.random().toString(36).slice(2,8)}`; }
-
+function computeNextOrderInModule(modName){
+  const nums = state.rows
+    .filter(r => String(r?.fields?.Module||"") === String(modName||""))
+    .map(r => Number(r?.fields?.Order))
+    .filter(n => Number.isFinite(n) && n > 0);
+  return (nums.length ? Math.max(...nums) : 0) + 1;
+}
 function readForm(){
   const type = (ui.questionType?.value || "MC").toUpperCase();
   const slide = (ui.slideId?.value || "").trim();
-let order = Number(ui.order?.value || NaN);
-if (!Number.isFinite(order) || order <= 0) {
-  // compute next order within the chosen module from the in-memory rows
-  const mod = (ui.moduleSelect?.value === "__ADD_NEW__" ? ui.moduleInput?.value : ui.moduleSelect?.value) || "";
-  const maxInModule = Math.max(
-    0,
-    ...state.rows
-      .filter(r => String(r.fields?.Module || "") === String(mod))
-      .map(r => Number(r.fields?.Order))
-      .filter(n => Number.isFinite(n))
-  );
-  order = maxInModule + 1;
-}
+
+  let order = Number(ui.order?.value || NaN);
+  const moduleSelected =
+    (ui.moduleSelect?.value === ADD_NEW_VALUE ? (ui.moduleInput?.value || "").trim() : ui.moduleSelect?.value) || "";
+  if (!Number.isFinite(order) || order <= 0) {
+    order = computeNextOrderInModule(moduleSelected);
+  }
+
   const qid = (ui.questionId?.value || "").trim() || genQuestionId("q");
   const qtext = (ui.questionText?.value || "").trim();
-
   if (!qtext) throw new Error("Question text is required.");
 
   // Module value (with '+ Add new…' validation)
@@ -321,12 +422,12 @@ if (!Number.isFinite(order) || order <= 0) {
 
   const fields = {
     "Type": type,
-    "Slide ID": slide,
-    "Order": order,
+    "Slide ID": slide || undefined,      // optional
+    "Order": order,                      // ALWAYS a positive number
     "QuestionId": qid,
     "Question": qtext,
-    "Required": true,
-    "Active": true,
+    "Required": true,                    // default required
+    "Active": true,                      // default active (safe for training)
     "Module": moduleVal || undefined,
   };
 
@@ -335,7 +436,7 @@ if (!Number.isFinite(order) || order <= 0) {
     if (opts.length === 0) throw new Error("Add at least one option.");
     const correct = (opts.find(o => o.correct) || {}).text || "";
     fields["Options (JSON)"] = JSON.stringify(opts.map(o => o.text));
-    fields["Correct"] = correct;
+    fields["Correct"] = correct || undefined;
     fields["FITB Answers (JSON)"] = undefined;
     fields["FITB Use Regex"] = undefined;
     fields["FITB Case Sensitive"] = undefined;
@@ -350,19 +451,18 @@ if (!Number.isFinite(order) || order <= 0) {
   }
   return fields;
 }
-
 function fillForm(fields){
   const type = (fields["Type"] || "MC").toUpperCase();
   if (ui.questionType) ui.questionType.value = type;
   updateTypeVisibility();
 
   if (ui.slideId) ui.slideId.value = fields["Slide ID"] || "";
-  if (ui.order) ui.order.value = Number(fields["Order"] || 1);
+  if (ui.order) ui.order.value = Number(fields["Order"] || "");
   if (ui.questionId) ui.questionId.value = fields["QuestionId"] || "";
   if (ui.questionText) ui.questionText.value = fields["Question"] || "";
 
   const m = fields["Module"] || "";
-  if (ui.moduleSelect) ui.moduleSelect.value = m && optionExists(ui.moduleSelect, m) ? m : "";
+  if (ui.moduleSelect) ui.moduleSelect.value = (m && optionExists(ui.moduleSelect, m)) ? m : "";
   if (ui.moduleNewWrap) ui.moduleNewWrap.classList.add("hide");
   if (ui.moduleInput) ui.moduleInput.value = "";
 
@@ -376,22 +476,20 @@ function fillForm(fields){
     if (ui.fitbCaseSensitive) ui.fitbCaseSensitive.checked = asBool(fields["FITB Case Sensitive"]);
   }
 }
-
 function optionExists(selectEl, value){
   return Array.from(selectEl.options).some(o => o.value === value);
 }
-
 function resetForm(){
   if (ui.questionType) ui.questionType.value = "MC";
   updateTypeVisibility();
   if (ui.slideId) ui.slideId.value = "";
-  if (ui.order) ui.order.value = "1";
+  if (ui.order) ui.order.value = "";
   if (ui.questionId) ui.questionId.value = "";
   if (ui.questionText) ui.questionText.value = "";
   if (ui.moduleSelect) ui.moduleSelect.value = "";
   if (ui.moduleNewWrap) ui.moduleNewWrap.classList.add("hide");
   if (ui.moduleInput) ui.moduleInput.value = "";
-  setOptions(["",""]);
+  setOptions(["","","",""]);
   if (ui.fitbAnswers) ui.fitbAnswers.value = "";
   if (ui.fitbUseRegex) ui.fitbUseRegex.checked = false;
   if (ui.fitbCaseSensitive) ui.fitbCaseSensitive.checked = false;
@@ -416,7 +514,7 @@ function filterRows(q){
     const f = r.fields || {};
     const hay = `${f.Type||""}\n${f.Question||""}\n${f["Slide ID"]||""}\n${f.QuestionId||""}\n${f.Module||""}`.toLowerCase();
     const passesSearch = !s || hay.includes(s);
-    const isActive = asBool(f.Active);
+    const isActive = asBool(f.Active); // missing Active -> false
     const passesFlags = (isActive && showActive) || (!isActive && showInactive);
     return passesSearch && passesFlags;
   });
@@ -434,16 +532,8 @@ function summarizeQuestion(f){
     return `MC – ${arr.length} option(s), correct: “${correct}”`;
   }
 }
-// Heuristic: read a wrong count from common field names
 function getWrongCount(f){
-  const cand = [
-    "Wrong Attempts",
-    "Wrong Count",
-    "Incorrect Count",
-    "Wrong Users",
-    "People Wrong",
-    "Wrong"
-  ];
+  const cand = ["Wrong Attempts","Wrong Count","Incorrect Count","Wrong Users","People Wrong","Wrong"];
   for (const k of cand){
     const v = f && f[k];
     const n = Number(v);
@@ -462,30 +552,35 @@ function renderModulesView(rows){
   }
   const groups = groupByModule(rows);
   const mods = Array.from(groups.keys()).sort((a,b)=>a.localeCompare(b));
+
   const out = [];
   for (const modName of mods){
     const list = groups.get(modName) || [];
     const count = list.length;
+
     const body = list.map(r => {
       const f = r.fields || {};
       const qtxt = esc(f.Question || "");
       const id = esc(r.id);
       const meta = summarizeQuestion(f);
       const wrongCount = getWrongCount(f);
-const wrongBadge = (wrongCount > 10)
-  ? `<span class="badge bad" title="${wrongCount} people got this wrong" style="margin-left:8px">${wrongCount} employees have answered this question wrong</span>`
-  : "";
+      const wrongBadge = (wrongCount > 10)
+        ? `<span class="badge bad" title="${wrongCount} people got this wrong" style="margin-left:8px">${wrongCount} employees have answered this question wrong</span>`
+        : "";
+
       return `<div class="qline">
         <div class="qtext">
-    <div><strong>${qtxt}</strong>${wrongBadge}</div>
-    <div class="muted small">${esc(meta)}</div>
-  </div>
-  <div class="actions" style="display:flex; gap:8px">
-    <button class="btn btn-ghost edit" data-id="${id}">Edit</button>
-    <button class="btn btn-danger delete" data-id="${id}">Delete</button>
-  </div>
-</div>`;
+          <div><strong>${qtxt}</strong> ${wrongBadge}</div>
+          <div class="muted small">${esc(meta)}</div>
+        </div>
+        <div class="actions" style="display:flex; gap:8px">
+          <button class="btn btn-ghost edit" data-id="${id}">Edit</button>
+          <button class="btn btn-danger delete" data-id="${id}">Delete</button>
+          <button class="btn wrongs" data-q="${esc(qtxt)}">Who got it wrong</button>
+        </div>
+      </div>`;
     }).join("");
+
     out.push(`<div class="mod" data-mod="${esc(modName)}">
       <button class="mod-head" type="button" aria-expanded="false">
         <span>${esc(modName)}</span>
@@ -494,7 +589,10 @@ const wrongBadge = (wrongCount > 10)
       <div class="mod-body" hidden>${body}</div>
     </div>`);
   }
+
   el.innerHTML = out.join("");
+
+  // expand/collapse
   el.querySelectorAll(".mod-head").forEach(btn => {
     btn.addEventListener("click", () => {
       const expanded = btn.getAttribute("aria-expanded") === "true";
@@ -503,6 +601,8 @@ const wrongBadge = (wrongCount > 10)
       if (body) body.hidden = !body.hidden;
     });
   });
+
+  // edit / delete / wrongs
   el.querySelectorAll(".edit").forEach(b => {
     b.addEventListener("click", () => {
       const id = b.getAttribute("data-id");
@@ -530,1491 +630,210 @@ const wrongBadge = (wrongCount > 10)
       }
     });
   });
+  el.querySelectorAll(".wrongs").forEach(b => {
+    b.addEventListener("click", async () => {
+      const questionText = b.getAttribute("data-q") || "";
+      try {
+        const emails = await fetchWrongUsersByQuestion(questionText);
+        showWrongUsersModal(questionText, emails);
+      } catch (e) {
+        console.error(e);
+        alert("Failed to fetch wrong users.\n" + (e?.message || e));
+      }
+    });
+  });
 }
 
 // ========= List / search / paging =========
 async function refreshList(){
   if (ui.listStatus) ui.listStatus.textContent = "Loading…";
   try {
+    // Sort by Order asc; if some rows have blank Order, we'll correct later
     const data = await listAll({ tableId: AIRTABLE.TABLE_ID, pageSize: 100, sortField:"Order", sortDir:"asc" });
     state.rows = data.records || [];
+
+    // Build module set (ignore blanks)
     state.modules = new Set(state.rows.map(r => (r.fields||{}).Module).filter(Boolean));
     populateModuleSelect(state.modules);
+
     renderModulesView(filterRows(ui.search ? ui.search.value : ""));
     if (ui.listStatus) ui.listStatus.textContent = `Loaded ${state.rows.length} question${state.rows.length===1?"":"s"}.`;
-    renderModuleList();
-    renderModuleTitleLinker();
+
+    // If any Active rows have missing/bad Order, auto-fix in the background to prevent training breaks.
+    await autoFixEmptyOrdersForActive();
+
+    // If you show Titles/Assignments on this page, you can render/link them here (left intact).
+    // renderModuleList(); renderModuleTitleLinker();  // (no-ops if elements aren’t on the page)
   } catch (e) {
     console.error("[Admin] refreshList failed:", e);
     if (ui.listStatus) ui.listStatus.textContent = "Load failed.";
   }
 }
 
-// ========= Titles (load + helpers) =========
-function parseModulesFromLongText(v){ if (!v) return []; return String(v).split(/[\n,;]+/g).map(s => s.trim()).filter(Boolean); }
-function joinModulesForLongText(arr){ return (arr || []).map(s => String(s).trim()).filter(Boolean).join("\n"); }
-function normalizeTitle(v) {
-  if (v == null) return "";
-  if (typeof v === "string") return v.trim();
-  if (typeof v === "number") return String(v);
-  if (Array.isArray(v)) {
-    for (const item of v) {
-      if (typeof item === "string") return item.trim();
-      if (item && typeof item === "object") {
-        if (typeof item.name === "string") return item.name.trim();
-        if (typeof item.id === "string") return item.id;
-      }
-    } return v.length ? String(v[0]) : "";
-  }
-  if (typeof v === "object") { if (typeof v.name === "string") return v.name.trim(); return JSON.stringify(v); }
-  try { return String(v); } catch { return ""; }
-}
-function detectAssignedFieldNameFromRecordFields(fieldsObj){
-  if (!fieldsObj) return null;
-  const keys = Object.keys(fieldsObj);
-  const want = (AIRTABLE.TITLES_ASSIGNED_FIELD || "").toLowerCase();
-  let found = keys.find(k => k.toLowerCase() === want);
-  if (found) return found;
-  const cand = keys.find(k => { const s = k.toLowerCase(); return s.includes("assigned") && s.includes("module"); });
-  if (cand) return cand;
-  return keys.find(k => k.toLowerCase().includes("modules")) || null;
-}
-function detectMappingFieldNameFromRecordFields(fieldsObj){
-  if (!fieldsObj) return null;
-  const keys = Object.keys(fieldsObj);
-  if (AIRTABLE.TITLES_MAPPING_FIELD) {
-    const want = AIRTABLE.TITLES_MAPPING_FIELD.toLowerCase();
-    const exact = keys.find(k => k.toLowerCase() === want);
-    if (exact) return exact;
-  }
-  const cand = keys.find(k => { const s = k.toLowerCase(); return s.includes("assigned") && (s.includes("map") || s.includes("mapping")); });
-  return cand || null;
-}
-async function listAllTitlesPage(offset){
-  return listAll({
-    tableId: AIRTABLE.TITLES_TABLE_ID,
-    pageSize: 100,
-    offset,
-    sortField: AIRTABLE.TITLES_FIELD_NAME,
-    sortDir: "asc"
-  });
-}
-async function fetchDistinctTitles(){
-  const all = [];
-  let offset;
-  state.idsByTitleKey = Object.create(null);
-  state.titleKeyById  = Object.create(null);
-  let detectedAssigned = null;
-  let detectedMapping = null;
-  do {
-    const data = await listAllTitlesPage(offset);
-    (data.records || []).forEach(r => {
-      const f = r.fields || {};
-      if (!detectedAssigned) detectedAssigned = detectAssignedFieldNameFromRecordFields(f);
-      if (!detectedMapping) detectedMapping = detectMappingFieldNameFromRecordFields(f);
-      const rawTitle = f[AIRTABLE.TITLES_FIELD_NAME];
-      const title = normalizeTitle(rawTitle);
-      if (!title) return;
-      const assigned = (detectedAssigned && typeof f[detectedAssigned] !== "undefined")
-        ? parseModulesFromLongText(f[detectedAssigned])
-        : (typeof f[AIRTABLE.TITLES_ASSIGNED_FIELD] !== "undefined")
-            ? parseModulesFromLongText(f[AIRTABLE.TITLES_ASSIGNED_FIELD])
-            : [];
-      const rec = { id: r.id, title, assigned };
-      all.push(rec);
-      const key = title.toLowerCase().trim();
-      state.titleKeyById[r.id] = key;
-      if (!state.idsByTitleKey[key]) state.idsByTitleKey[key] = [];
-      state.idsByTitleKey[key].push(r.id);
-    });
-    offset = data.offset;
-  } while (offset);
-
-  state.assignedFieldName = detectedAssigned || state.assignedFieldName;
-  state.mappingFieldName  = detectedMapping  || state.mappingFieldName;
-
-  const seen = new Set();
-  const unique = [];
-  for (const row of all) {
-    const key = row.title.toLowerCase();
-    if (!seen.has(key)) { seen.add(key); unique.push(row); }
-  }
-  state.titles = sortTitlesAZ(unique);
-  populateTitleSelect(state.titles);
-  updateTitleCount();
-  renderModuleTitleLinker();
-  return state.titles;
-}
-function populateTitleSelect(list){
-  if (!ui.titleSelect) return;
-  const sorted = sortTitlesAZ(Array.isArray(list) ? list : []);
-  ui.titleSelect.innerHTML = sorted.map(t => `<option value="${esc(t.id)}">${esc(t.title)}</option>`).join("");
-}
-function getSelectedTitleIds(){ const sel = ui.titleSelect; if (!sel) return []; return Array.from(sel.selectedOptions || []).map(o => o.value).filter(Boolean); }
-function updateTitleCount(){
-  if (!ui.titleCount) return;
-  const total = state.titles.length;
-  const selected = getSelectedTitleIds().length;
-  ui.titleCount.textContent = `${total} titles • ${selected} selected`;
-}
-
-// ========= Assignment logic =========
-function computeAssignedAgg(selectedIds){
-  const chosen = state.titles.filter(t => selectedIds.includes(t.id));
-  const lists = chosen.map(t => new Set((t.assigned || []).map(String)));
-  if (lists.length === 0) return { all: new Set(), some: new Set() };
-  const union = new Set(); lists.forEach(s => s.forEach(x => union.add(x)));
-  let intersection = new Set(lists[0]);
-  for (let i=1;i<lists.length;i++){ const next = new Set(); lists[i].forEach(x => { if (intersection.has(x)) next.add(x); }); intersection = next; }
-  return { all: intersection, some: union };
-}
-
-function renderModuleList(){
-  if (!ui.moduleList) return;
-  const query = (ui.moduleSearch?.value || "").toLowerCase().trim();
-  const selectedTitles = getSelectedTitleIds();
-  const { all, some } = computeAssignedAgg(selectedTitles);
-
-  const itemsSet = new Set([ ...Array.from(state.modules), ...Array.from(state.manualModules) ]);
-  const items = Array.from(itemsSet).sort((a,b)=>a.localeCompare(b));
-
-  const rows = items
-    .filter(m => !query || m.toLowerCase().includes(query))
-    .map(m => {
-      const isAll = all.has(m);
-      const isSome = !isAll && some.has(m);
-      return { name: m, rank: isAll ? 0 : (isSome ? 1 : 2), isAll, isSome };
-    });
-
-  rows.sort((a,b) => (a.rank !== b.rank) ? a.rank - b.rank : a.name.localeCompare(b.name));
-
-  if (rows.length === 0) { ui.moduleList.innerHTML = ""; return; }
-
-  ui.moduleList.innerHTML = rows.map(r => {
-    const selected = state.selectedModules.has(r.name);
-    const cls = `${r.isAll ? "is-all" : r.isSome ? "is-some" : ""} ${selected ? "selected" : ""}`.trim();
-    const tag = r.isAll ? "Assigned (all)" : r.isSome ? "Assigned (some)" : "Not assigned";
-    return `<li class="${cls}" data-module="${esc(r.name)}">
-      <div class="pick">
-        <input type="checkbox" class="pickbox"${selected?" checked":""} aria-label="select module ${esc(r.name)}"/>
-        <div>
-          <div class="name">${esc(r.name)}</div>
-          <div class="meta">${tag}</div>
-        </div>
-      </div>
-      <span class="tag">${tag}</span>
-    </li>`;
-  }).join("");
-
-  ui.moduleList.querySelectorAll("li").forEach(li => {
-    li.addEventListener("click", (ev) => {
-      const mod = li.getAttribute("data-module");
-      if (!mod) return;
-      const selected = state.selectedModules.has(mod);
-      if (selected) state.selectedModules.delete(mod); else state.selectedModules.add(mod);
-      renderModuleList();
-      updateAssignStatusText();
-    });
-  });
-
-  updateAssignStatusText();
-}
-function updateAssignStatusText(){
-  const selectedTitles = getSelectedTitleIds();
-  const mods = Array.from(state.selectedModules);
-  if (!ui.assignStatus) return;
-  if (!selectedTitles.length) { ui.assignStatus.textContent = "Select one or more titles, then pick modules."; return; }
-  ui.assignStatus.textContent = mods.length ? `Ready: ${mods.length} module(s) selected.` : `All selected titles share the same module set.`;
-}
-
-async function batchPatch(tableId, updates){
-  const BATCH = 10;
-  for (let i = 0; i < updates.length; i += BATCH) {
-    const chunk = updates.slice(i, i + BATCH);
-    const res = await fetch(baseUrl(tableId), {
-      method: "PATCH",
-      headers: headers(),
-      body: JSON.stringify({ records: chunk, typecast: true })
-    });
-    if (!res.ok) throw new Error(`Update failed: HTTP ${res.status} – ${await res.text()}`);
-  }
-}
-
-async function assignSelected(){
-  const selectedIds = getSelectedTitleIds();
-  if (!selectedIds.length) return toast("Select at least one title.", "bad");
-  if (!state.selectedModules.size) return toast("Pick module(s) to assign.", "bad");
-
-  const updates = [];
-  selectedIds.forEach(id => {
-    const t = state.titles.find(x => x.id === id);
-    const set = new Set([...(t?.assigned || []), ...state.selectedModules]);
-    const fields = {};
-    fields[state.assignedFieldName] = joinModulesForLongText(Array.from(set).sort((a,b)=>a.localeCompare(b)));
-    fields[state.mappingFieldName]  = `${t?.title || ""}: ${fields[state.assignedFieldName]}`;
-    updates.push({ id, fields });
-  });
-
-  await batchPatch(AIRTABLE.TITLES_TABLE_ID, updates);
-  toast("Assigned.", "ok");
-  state.selectedModules.clear();
-  await fetchDistinctTitles();
-  renderModuleList();
-  renderModuleTitleLinker();
-}
-
-async function unassignSelected(){
-  const selectedIds = getSelectedTitleIds();
-  if (!selectedIds.length) return toast("Select at least one title.", "bad");
-  if (!state.selectedModules.size) return toast("Pick module(s) to unassign.", "bad");
-
-  const updates = [];
-  selectedIds.forEach(id => {
-    const t = state.titles.find(x => x.id === id);
-    const set = new Set((t?.assigned || []).filter(m => !state.selectedModules.has(m)));
-    const fields = {};
-    fields[state.assignedFieldName] = joinModulesForLongText(Array.from(set).sort((a,b)=>a.localeCompare(b)));
-    fields[state.mappingFieldName]  = `${t?.title || ""}: ${fields[state.assignedFieldName]}`;
-    updates.push({ id, fields });
-  });
-
-  await batchPatch(AIRTABLE.TITLES_TABLE_ID, updates);
-  toast("Unassigned.", "ok");
-  state.selectedModules.clear();
-  await fetchDistinctTitles();
-  renderModuleList();
-  renderModuleTitleLinker();
-}
-
-// ========= Module ↔ Titles matrix =========
-function buildModuleToTitlesMap(){
-  const map = new Map();
-  const allModules = new Set([ ...Array.from(state.modules), ...Array.from(state.manualModules) ]);
-  state.titles.forEach(t => (t.assigned||[]).forEach(m => allModules.add(m)));
-  allModules.forEach(m => map.set(m, []));
-  state.titles.forEach(t => { (t.assigned || []).forEach(m => { if (!map.has(m)) map.set(m, []); map.get(m).push({ id: t.id, title: t.title }); }); });
-  return map;
-}
-function titlesNotLinkedToModule(moduleName){
-  const linkedIds = new Set((buildModuleToTitlesMap().get(moduleName) || []).map(t => t.id));
-  return state.titles.filter(t => !linkedIds.has(t.id));
-}
-function renderModuleTitleLinker(){
-  if (!ui.modTitleList) return;
-  const map = buildModuleToTitlesMap();
-  const modules = Array.from(map.keys()).sort((a,b)=>a.localeCompare(b));
-  if (modules.length === 0){
-    ui.modTitleList.innerHTML = `<div class="module-empty">No modules yet. Create questions with a Module or add modules above to get started.</div>`;
-    return;
-  }
-
-  const html = [
-    `<div class="modtitle-grid">`,
-    ...modules.map((m, idx) => {
-      const list = map.get(m) || [];
-      const selectId = `mt-add-${idx}`;
-      const options = titlesNotLinkedToModule(m).map(t => `<option value="${esc(t.id)}">${esc(t.title)}</option>`).join("");
-      return `
-        <div class="modtitle-card" data-module="${esc(m)}">
-          <div class="modtitle-head">
-            <div class="modtitle-name">${esc(m)}</div>
-            <div class="muted small">${list.length} title${list.length===1?"":"s"}</div>
-          </div>
-          <div class="chips">
-            ${ list.length
-                ? list.sort((a,b)=>a.title.localeCompare(b.title))
-                      .map(t => `<span class="chip" data-title-id="${esc(t.id)}"><span>${esc(t.title)}</span><span class="x" title="Remove from ${esc(m)}" aria-label="Remove">✕</span></span>`).join("")
-                : `<span class="muted small">No titles linked.</span>`
-            }
-          </div>
-          <div class="addbar">
-            <select id="${selectId}">
-              <option value="">Add title…</option>
-              ${options}
-            </select>
-            <button class="btn" data-add-for="${esc(m)}" data-select="#${selectId}">Add</button>
-          </div>
-        </div>
-      `;
-    }),
-    `</div>`
-  ].join("");
-
-  ui.modTitleList.innerHTML = html;
-
-  // Remove handlers
-  ui.modTitleList.querySelectorAll(".chip .x").forEach(x => {
-    x.addEventListener("click", async (ev) => {
-      const chip = ev.currentTarget.closest(".chip");
-      const card = ev.currentTarget.closest(".modtitle-card");
-      const moduleName = card?.getAttribute("data-module");
-      const titleId = chip?.getAttribute("data-title-id");
-      if (!moduleName || !titleId) return;
-      try {
-        await unassignOne(titleId, moduleName);
-        toast(`Removed "${moduleName}" from selected title.`, "ok");
-        await fetchDistinctTitles();
-        renderModuleTitleLinker();
-        renderModuleList();
-      } catch(e){ console.error(e); toast(e.message || "Unassign failed", "bad"); }
-    });
-  });
-
-  // Add handlers
-  ui.modTitleList.querySelectorAll("[data-add-for]").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const moduleName = btn.getAttribute("data-add-for");
-      const sel = ui.modTitleList.querySelector(btn.getAttribute("data-select"));
-      const val = sel ? sel.value : "";
-      if (!moduleName || !val) return;
-      try {
-        await assignOne(val, moduleName);
-        toast(`Added title to "${moduleName}".`, "ok");
-        await fetchDistinctTitles();
-        renderModuleTitleLinker();
-        renderModuleList();
-      } catch(e){ console.error(e); toast(e.message || "Assign failed", "bad"); }
-    });
-  });
-}
-
-async function assignOne(titleId, moduleName){
-  const t = state.titles.find(x => x.id === titleId);
-  const set = new Set([...(t?.assigned || []), moduleName]);
-  const fields = {};
-  fields[state.assignedFieldName] = joinModulesForLongText(Array.from(set).sort((a,b)=>a.localeCompare(b)));
-  fields[state.mappingFieldName]  = `${t?.title || ""}: ${fields[state.assignedFieldName]}`;
-  await batchPatch(AIRTABLE.TITLES_TABLE_ID, [{ id: titleId, fields }]);
-}
-async function unassignOne(titleId, moduleName){
-  const t = state.titles.find(x => x.id === titleId);
-  const set = new Set((t?.assigned || []).filter(m => m !== moduleName));
-  const fields = {};
-  fields[state.assignedFieldName] = joinModulesForLongText(Array.from(set).sort((a,b)=>a.localeCompare(b)));
-  fields[state.mappingFieldName]  = `${t?.title || ""}: ${fields[state.assignedFieldName]}`;
-  await batchPatch(AIRTABLE.TITLES_TABLE_ID, [{ id: titleId, fields }]);
-}
-
-// ========= Events =========
-if (ui.btnAddOption) ui.btnAddOption.addEventListener("click", () => addOption(""));
-if (ui.btnClearOptions) ui.btnClearOptions.addEventListener("click", () => setOptions(["",""]));
-if (ui.questionType) ui.questionType.addEventListener("change", updateTypeVisibility);
-
-// Save / Reset
-if (ui.btnSave) ui.btnSave.addEventListener("click", async (e) => {
-  e.preventDefault();
-  try {
-    const fields = readForm();
-    await createRecord(fields);
-    toast("Created");
-    resetForm();
-    await refreshList();
-  } catch (err) { toast(err?.message || "Save failed", "bad"); }
-});
-if (ui.btnReset) ui.btnReset.addEventListener("click", (e) => { e.preventDefault(); resetForm(); });
-
-// Module dropdown reveal: '+ Add new…'
-if (ui.moduleSelect) ui.moduleSelect.addEventListener("change", toggleModuleNewVisibility);
-// Commit new module name on Enter
-if (ui.moduleInput) ui.moduleInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") {
-    e.preventDefault();
-    const name = (ui.moduleInput.value || "").trim();
-    if (!name) return;
-    state.manualModules.add(name);
-    // Rebuild dropdown so the new module appears as a normal option
-    populateModuleSelect(state.modules);
-    ui.moduleSelect.value = name;
-    toggleModuleNewVisibility();
-    toast(`Added module “${name}”`, "ok");
-  }
-});
-
-// Search/filter live for Questions list
-if (ui.search) ui.search.addEventListener('input', () => renderModulesView(filterRows(ui.search.value)));
-if (ui.fltActive) ui.fltActive.addEventListener('change', () => renderModulesView(filterRows(ui.search.value)));
-if (ui.fltInactive) ui.fltInactive.addEventListener('change', () => renderModulesView(filterRows(ui.search.value)));
-if (ui.btnRefresh) ui.btnRefresh.addEventListener('click', () => { refreshList(); fetchDistinctTitles(); });
-
-// Assignment panel events
-if (ui.titleSelect) ui.titleSelect.addEventListener("change", () => { updateTitleCount(); renderModuleList(); });
-if (ui.titleSearch) ui.titleSearch.addEventListener("input", debounce(() => {
-  const q = ui.titleSearch.value.toLowerCase().trim();
-  const filtered = !q ? state.titles : state.titles.filter(t => (t.title||"").toLowerCase().includes(q));
-  ui.titleSelect.innerHTML = filtered.map(t => `<option value="${t.id}">${esc(t.title)}</option>`).join("");
-  updateTitleCount();
-  renderModuleList();
-}, 150));
-if (ui.btnSelectAllTitles) ui.btnSelectAllTitles.addEventListener("click", () => {
-  const opts = $$("#titleSelect option"); opts.forEach(o => o.selected = true);
-  ui.titleSelect.dispatchEvent(new Event("change"));
-});
-if (ui.btnClearTitles) ui.btnClearTitles.addEventListener("click", () => {
-  $$("#titleSelect option").forEach(o => o.selected = false);
-  ui.titleSelect.dispatchEvent(new Event("change"));
-});
-
-if (ui.moduleSearch) ui.moduleSearch.addEventListener("input", debounce(renderModuleList, 150));
-if (ui.btnSelectAllModules) ui.btnSelectAllModules.addEventListener("click", () => {
-  const itemsSet = new Set([ ...Array.from(state.modules), ...Array.from(state.manualModules) ]);
-  Array.from(itemsSet).forEach(m => state.selectedModules.add(m));
-  renderModuleList();
-});
-if (ui.btnClearModules) ui.btnClearModules.addEventListener("click", () => { state.selectedModules.clear(); renderModuleList(); });
-
-if (ui.btnAssign) ui.btnAssign.addEventListener("click", assignSelected);
-if (ui.btnUnassign) ui.btnUnassign.addEventListener("click", unassignSelected);
-
-// ========= Init =========
-(async function init(){
-  try {
-    updateTypeVisibility();
-    if (ui.options && ui.options.children.length === 0) { setOptions(["","","",""]); }
-    await refreshList();
-    await fetchDistinctTitles();
-    renderModuleList();
-    renderModuleTitleLinker();
-    toggleModuleNewVisibility(); // ensure hidden on load
-  } catch (e) { console.error(e); toast(e.message || "Init failed", "bad"); }
-})();
-/* =========================
- * Module → Slides & GAS
- * ========================= */
-(function ModMapModule(){
-  // --- CONFIG: set your Airtable table for mappings here ---
-  const MODMAP_TABLE_ID = "Table3"; // You can change to a real table ID like "tblXXXX..." or a table name
-  // Field names in that table (create these columns in Airtable):
-  // - Module (single line text)
-  // - PresentationId (single line text)
-  // - GasUrl (single line text)
-  // - Active (checkbox)
-
-  // --- UI refs ---
-  const mm = {
-    root: document.getElementById("modmap-root"),
-    id:   document.getElementById("modmap-id"),
-    module: document.getElementById("modmap-module"),
-    pid:    document.getElementById("modmap-pid"),
-    gas:    document.getElementById("modmap-gas"),
-    active: document.getElementById("modmap-active"),
-    quick:  document.getElementById("modmap-quick"),
-    status: document.getElementById("modmap-status"),
-    save:   document.getElementById("modmap-save"),
-    reset:  document.getElementById("modmap-reset"),
-    list:   document.getElementById("modmap-list"),
-    search: document.getElementById("modmap-search"),
-    refresh:document.getElementById("modmap-refresh"),
-    ping:   document.getElementById("modmap-ping"),
-    openSlides: document.getElementById("modmap-open-slides"),
-    form:   document.getElementById("modmap-form")
-  };
-
-  if (!mm.root) return; // Section not on page; bail safely.
-
-  // --- Local state ---
-  const s = {
-    rows: [], // airtable records
-    query: ""
-  };
-
-  // --- Helpers ---
-  const setStatus = (msg, kind="") => {
-    if (!mm.status) return;
-    mm.status.textContent = msg || "";
-    mm.status.classList.remove("ok", "bad");
-    if (kind) mm.status.classList.add(kind);
-  };
-  const trim = v => (v||"").trim();
-
-  function slidesUrlFromId(pid){
-    const p = trim(pid);
-    if (!p) return "";
-    return `https://docs.google.com/presentation/d/${encodeURIComponent(p)}/edit`;
-  }
-
-  function validForm(data){
-    if (!data.Module)  return "Module is required.";
-    if (!data.PresentationId && !data.GasUrl) {
-      return "Provide at least a Slides Presentation ID or a GAS Web App URL.";
-    }
-    return "";
-  }
-
-  // Build quick-pick chips from known modules (populated by your Questions refresh)
-  function renderQuickChips(){
-    if (!mm.quick) return;
-    const mods = Array.from((window.state?.modules || new Set())).sort((a,b)=>a.localeCompare(b));
-    if (!mods.length){
-      mm.quick.innerHTML = `<span class="muted small">No modules detected yet.</span>`;
-      return;
-    }
-    mm.quick.innerHTML = mods.map(m => `<span class="chip" data-m="${esc(m)}">${esc(m)}</span>`).join("");
-    mm.quick.querySelectorAll(".chip").forEach(ch => {
-      ch.addEventListener("click", () => { mm.module.value = ch.getAttribute("data-m") || ""; });
-    });
-  }
-
-  // --- Airtable calls (reusing your helpers) ---
-  async function listAllModMaps(offset){
-    // Sort by Module asc for nicer UX
-    return listAll({ tableId: MODMAP_TABLE_ID, pageSize: 100, offset, sortField: "Module", sortDir: "asc" });
-  }
-
-  async function fetchAll(){
-    const out = [];
-    let offset;
-    do {
-      const page = await listAllModMaps(offset);
-      (page.records || []).forEach(r => out.push(r));
-      offset = page.offset;
-    } while (offset);
-    return out;
-  }
-
-  async function createModMap(fields){
-    const res = await fetch(baseUrl(MODMAP_TABLE_ID), {
-      method: "POST",
-      headers: headers(),
-      body: JSON.stringify({ records: [{ fields }], typecast: true })
-    });
-    if (!res.ok) throw new Error(`Create failed: HTTP ${res.status} – ${await res.text()}`);
-    return res.json();
-  }
-
-  async function updateModMap(id, fields){
-    const res = await fetch(baseUrl(MODMAP_TABLE_ID), {
-      method: "PATCH",
-      headers: headers(),
-      body: JSON.stringify({ records: [{ id, fields }], typecast: true })
-    });
-    if (!res.ok) throw new Error(`Update failed: HTTP ${res.status} – ${await res.text()}`);
-    return res.json();
-  }
-
-  async function deleteModMap(id){
-    const url = `${baseUrl(MODMAP_TABLE_ID)}/${encodeURIComponent(id)}`;
-    const res = await fetch(url, { method: "DELETE", headers: headers() });
-    if (!res.ok) throw new Error(`Delete failed: HTTP ${res.status} – ${await res.text()}`);
-    return res.json();
-  }
-
-  // --- Render saved mappings ---
-  function renderList(){
-    if (!mm.list) return;
-    const q = (s.query||"").toLowerCase();
-
-    const items = s.rows.filter(r => {
-      const f = r.fields || {};
-      const hay = `${f.Module||""}\n${f.PresentationId||""}\n${f.GasUrl||""}`.toLowerCase();
-      return !q || hay.includes(q);
-    });
-
-    if (!items.length){
-      mm.list.innerHTML = `
-        <div class="module-empty" style="margin-top:8px">
-          No mappings yet. Create one above.
-        </div>`;
-      return;
-    }
-
-    mm.list.innerHTML = items.map(r => {
-      const f = r.fields || {};
-      const mod = esc(f.Module || "(no module)");
-      const pid = esc(f.PresentationId || "");
-      const gas = esc(f.GasUrl || "");
-      const active = !!f.Active;
-      const tag = active ? `<span class="badge on">Active</span>` : `<span class="badge off">Inactive</span>`;
-      const meta = [
-        pid ? `Slides: ${pid.slice(0, 10)}…` : null,
-        gas ? `GAS: ${gas.slice(0, 28)}…` : null
-      ].filter(Boolean).join(" • ");
-
-      return `
-        <li data-id="${esc(r.id)}">
-          <div class="pick">
-            <div>
-              <div class="name">${mod}</div>
-              <div class="meta">${esc(meta)}</div>
-            </div>
-          </div>
-          ${tag}
-          <div class="row actions">
-            <button class="btn btn-ghost btn-mini" data-mm="edit">Edit</button>
-            <button class="btn btn-danger btn-mini" data-mm="del">Delete</button>
-          </div>
-        </li>
-      `;
-    }).join("");
-
-    // wire up actions
-    mm.list.querySelectorAll("li").forEach(li => {
-      const id = li.getAttribute("data-id");
-      const row = s.rows.find(x => x.id === id);
-
-      const btnE = li.querySelector('[data-mm="edit"]');
-      const btnD = li.querySelector('[data-mm="del"]');
-
-      if (btnE) btnE.addEventListener("click", () => fillFormFromRow(row));
-      if (btnD) btnD.addEventListener("click", async () => {
-        const name = row?.fields?.Module || "(no module)";
-        if (!confirm(`Delete mapping for “${name}”?`)) return;
-        try {
-          await deleteModMap(id);
-          toast("Deleted", "ok");
-          await refresh();
-        } catch(e){ console.error(e); toast(e.message||"Delete failed","bad"); }
-      });
-    });
-  }
-
-  // --- Form helpers ---
-  function clearForm(){
-    if (mm.id) mm.id.value = "";
-    if (mm.module) mm.module.value = "";
-    if (mm.pid) mm.pid.value = "";
-    if (mm.gas) mm.gas.value = "";
-    if (mm.active) mm.active.checked = true;
-    if (mm.openSlides) mm.openSlides.disabled = true;
-    setStatus("");
-  }
-
-  function readForm(){
-    const data = {
-      Module: trim(mm.module?.value),
-      PresentationId: trim(mm.pid?.value),
-      GasUrl: trim(mm.gas?.value),
-      Active: !!mm.active?.checked
-    };
-    const err = validForm(data);
-    if (err) throw new Error(err);
-    return data;
-  }
-
-  function fillFormFromRow(row){
-    const f = row?.fields || {};
-    if (mm.id) mm.id.value = row?.id || "";
-    if (mm.module) mm.module.value = f.Module || "";
-    if (mm.pid) mm.pid.value = f.PresentationId || "";
-    if (mm.gas) mm.gas.value = f.GasUrl || "";
-    if (mm.active) mm.active.checked = !!f.Active;
-    if (mm.openSlides) mm.openSlides.disabled = !trim(f.PresentationId);
-    setStatus(`Editing “${f.Module || ""}”`);
-    window.scrollTo({ top: mm.root.offsetTop - 12, behavior: "smooth" });
-  }
-
-  // --- Actions ---
-  async function refresh(){
-    setStatus("Loading…");
-    try {
-      // ensure quick chips show current modules
-      renderQuickChips();
-      s.rows = await fetchAll();
-      renderList();
-      setStatus(`Loaded ${s.rows.length} mapping${s.rows.length===1?"":"s"}.`, "ok");
-    } catch (e) {
-      console.error(e);
-      setStatus("Load failed.", "bad");
-      toast(e.message || "Load failed", "bad");
-    }
-  }
-
-  async function onSave(e){
-    e?.preventDefault?.();
-    try {
-      const fields = readForm();
-      mm.save.disabled = true;
-      setStatus("Saving…");
-
-      const id = trim(mm.id?.value);
-      if (id) {
-        await updateModMap(id, fields);
-      } else {
-        await createModMap(fields);
-      }
-
-      toast("Saved", "ok");
-      clearForm();
-      await refresh();
-    } catch(e){
-      console.error(e);
-      toast(e.message || "Save failed", "bad");
-      setStatus(e.message || "Save failed", "bad");
-    } finally {
-      mm.save.disabled = false;
-    }
-  }
-
-  function onReset(){ clearForm(); }
-
-  function onSearch(){
-    s.query = trim(mm.search?.value).toLowerCase();
-    renderList();
-  }
-
-  async function onPing(){
-    const url = trim(mm.gas?.value);
-    if (!url) { toast("Enter a GAS Web App URL first.", "bad"); return; }
-    setStatus("Pinging GAS…");
-    try {
-      // Simple GET; many GAS apps allow ?mode=ping for health—works even if ignored.
-      const res = await fetch(url + (url.includes("?") ? "&" : "?") + "mode=ping", { method: "GET" });
-      const ok = res.ok;
-      setStatus(ok ? "GAS responded OK" : `GAS responded ${res.status}`, ok ? "ok" : "bad");
-      toast(ok ? "Ping OK" : `Ping ${res.status}`, ok ? "ok" : "bad");
-    } catch(e){
-      console.warn(e);
-      setStatus("Ping failed (likely CORS)", "bad");
-      toast("Ping failed", "bad");
-    }
-  }
-
-  function onOpenSlides(){
-    const url = slidesUrlFromId(mm.pid?.value);
-    if (!url) return;
-    window.open(url, "_blank", "noopener,noreferrer");
-  }
-
-  function onPidInput(){
-    const has = !!trim(mm.pid?.value);
-    if (mm.openSlides) mm.openSlides.disabled = !has;
-  }
-
-  // --- Wire events ---
-  if (mm.form)   mm.form.addEventListener("submit", onSave);
-  if (mm.reset)  mm.reset.addEventListener("click", onReset);
-  if (mm.search) mm.search.addEventListener("input", debounce(onSearch, 150));
-  if (mm.refresh)mm.refresh.addEventListener("click", refresh);
-  if (mm.ping)   mm.ping.addEventListener("click", onPing);
-  if (mm.openSlides) mm.openSlides.addEventListener("click", onOpenSlides);
-  if (mm.pid)    mm.pid.addEventListener("input", onPidInput);
-
-  // --- Init ---
-  (async function initModMap(){
-    try {
-      renderQuickChips();
-      onPidInput();
-      await refresh();
-    } catch(e){
-      console.error(e);
-      toast(e.message || "Init (modmap) failed", "bad");
-    }
-  })();
-})();
-// Create → POST a single question to Airtable
-async function createQuestion(fields){
-  const res = await fetch(qBaseUrl(), {
-    method: 'POST',
-    headers: qHeaders(),
-    body: JSON.stringify({ records: [{ fields }] })
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(()=>'(no body)');
-    throw new Error(`Create failed: HTTP ${res.status} – ${body}`);
-  }
-  const data = await res.json();
-  return data.records?.[0];
-}
-
-// Collect values from your existing DOM
-function readQuestionFormFromDOM(){
-  const statusEl   = document.getElementById('qStatus');
-
-  const typeSel    = document.getElementById('questionType');
-  const type       = (typeSel?.value || 'MC').toUpperCase();
-  const slideRaw   = (document.getElementById('slideId')?.value || '').trim(); // hidden (intentionally)
-  const orderVal   = Number(document.getElementById('order')?.value || 1);
-  const questionId = (document.getElementById('questionId')?.value || '').trim();
-  const question   = (document.getElementById('questionText')?.value || '').trim();
-
-  const moduleSel  = document.getElementById('moduleSelect');
-  const moduleNew  = document.getElementById('moduleInput');
-  const moduleName = (moduleSel?.value || moduleNew?.value || '').trim();
-
-  const active     = true;   // checkbox field → boolean
-  const required   = true;   // checkbox field → boolean
-
-  if (!moduleName) throw new Error('Module is required.');
-  if (!question)   throw new Error('Question text is required.');
-  if (!Number.isFinite(orderVal) || orderVal < 1) throw new Error('Order must be a positive integer.');
-
-  // If slideId is blank (hidden), create one automatically
-  const slideId = slideRaw || genAutoSlideId(moduleName, orderVal);
-
-  const fields = {
-    'Active': active,
-    'Required': required,
-    'Module': moduleName,
-    'Order': orderVal,
-    'Type': type,
-    'Question': question,
-    'Slide ID': slideId
-  };
-
-  if (questionId) fields['QuestionId'] = questionId;
-
-  if (type === 'MC') {
-    const optWrap = document.getElementById('options');
-    const rows = Array.from(optWrap?.children || []);
-    const options = rows
-      .map(row => row.querySelector('.optText')?.value?.trim())
-      .filter(v => v && v.length);
-
-    // Allow 2–6 options (or change to exactly 3 if you prefer)
-    if (options.length < 2 || options.length > 6) {
-      throw new Error('Provide 2–6 options for MC.');
-    }
-
-    const chosen = rows.find(r => r.querySelector('.optCorrect')?.checked);
-    if (!chosen) throw new Error('Select one option as Correct.');
-    const correct = (chosen.querySelector('.optText')?.value || '').trim();
-    if (!correct) throw new Error('Selected correct option has empty text.');
-    if (!options.includes(correct)) throw new Error('Correct must exactly match one of the options.');
-
-    fields['Options (JSON)'] = JSON.stringify(options);
-    fields['Correct']        = correct;
-  } else {
-    const fitbEl = document.getElementById('fitbAnswers');
-    let answers = [];
-
-    if (fitbEl) {
-      try {
-        const parsed = JSON.parse(fitbEl.value || '[]');
-        if (!Array.isArray(parsed) || parsed.length < 1 || parsed.length > 2) throw 0;
-        answers = parsed.map(s => String(s).trim()).filter(Boolean);
-      } catch {
-        throw new Error('Provide FITB Answers (JSON) as ["word","two words"] (1–2 items).');
-      }
-    } else {
-      const raw = window.prompt('Enter 1–2 FITB answers (comma-separated):', '');
-      const parts = (raw||'').split(',').map(s=>s.trim()).filter(Boolean);
-      if (parts.length < 1 || parts.length > 2) throw new Error('Need 1–2 FITB answers.');
-      answers = parts;
-    }
-
-    fields['FITB Answers (JSON)'] = JSON.stringify(answers);
-    fields['FITB Use Regex']      = false;
-    fields['FITB Case Sensitive'] = false;
-  }
-
-  statusEl && (statusEl.textContent = 'Ready to save');
-  return fields;
-}
-
-
-
-(function wireSaveQuestion(){
-  const btn   = document.getElementById('btnSaveQuestion');
-  const status= document.getElementById('qStatus');
-  if (!btn) return;
-
-  btn.addEventListener('click', async () => {
-    status && (status.textContent = 'Saving…');
-    try {
-      const fields = readQuestionFormFromDOM();
-      const rec = await createQuestion(fields);
-      status && (status.textContent = 'Saved ✔');
-      // Optionally refresh the list or reset the form
-      // refreshQuestionsList();
-      // form.reset();
-    } catch (e) {
-      console.error(e);
-      status && (status.textContent = e.message || 'Save failed');
-    }
-  });
-})();
-// ===== Normalize Orders (Admin utilities) =====
-async function normalizeAllOrdersByModule({ dryRun = false } = {}) {
-  const moduleField = "Module";
-  const orderField  = "Order";
-
-  // 1) Pull every question row from the Questions table
-  const all = [];
-  let offset;
-  do {
-    const data = await listAll({ tableId: AIRTABLE.TABLE_ID, pageSize: 100, offset, sortField: orderField, sortDir: "asc" });
-    (data.records || []).forEach(r => all.push(r));
-    offset = data.offset;
-  } while (offset);
-
-  // 2) Group rows by Module
-  const groups = new Map();
-  for (const r of all) {
+// ========= Auto-fix & Normalize =========
+function splitModuleRows(){
+  const byMod = new Map();
+  for (const r of state.rows){
     const f = r.fields || {};
-    const mod = String(f[moduleField] || "").trim();
-    if (!groups.has(mod)) groups.set(mod, []);
-    groups.get(mod).push(r);
+    const m = (f.Module || "(no module)").trim() || "(no module)";
+    if (!byMod.has(m)) byMod.set(m, []);
+    byMod.get(m).push(r);
   }
-
-  // 3) For each module, sort and assign 1..N
+  return byMod;
+}
+function orderKey(n){
+  // Sort helper: missing/NaN -> very large so they sink to bottom
+  const num = Number(n);
+  return Number.isFinite(num) && num > 0 ? num : 9_000_000;
+}
+async function autoFixEmptyOrdersForActive(){
+  const byMod = splitModuleRows();
   const updates = [];
-  for (const [mod, items] of groups.entries()) {
-    items.sort((a, b) => {
-      const ao = Number(a.fields?.[orderField]); const bo = Number(b.fields?.[orderField]);
-      const an = Number.isFinite(ao) ? ao : Number.POSITIVE_INFINITY;
-      const bn = Number.isFinite(bo) ? bo : Number.POSITIVE_INFINITY;
-      // tiebreaker: by Question text to keep stable
-      if (an !== bn) return an - bn;
-      const aq = String(a.fields?.Question || "");
-      const bq = String(b.fields?.Question || "");
-      return aq.localeCompare(bq);
-    });
 
-    let n = 1;
-    for (const r of items) {
-      const cur = Number(r.fields?.[orderField]);
-      if (cur !== n) { updates.push({ id: r.id, fields: { [orderField]: n } }); }
-      n++;
+  for (const [mod, rows] of byMod.entries()){
+    // Sort rows by current Order (invalid -> bottom)
+    const sorted = [...rows].sort((a,b)=> orderKey(a.fields?.Order) - orderKey(b.fields?.Order));
+
+    // Walk and ensure all ACTIVE rows have a sane positive, unique sequence
+    let next = 1;
+    for (const r of sorted){
+      const f = r.fields || {};
+      const isActive = !!f.Active; // empty treated as false
+      if (!isActive) continue;     // leave inactive out of the active sequence
+
+      const cur = Number(f.Order);
+      if (!Number.isFinite(cur) || cur <= 0){
+        updates.push({ id: r.id, fields: { "Order": next } });
+        next++;
+      } else {
+        // if cur has gaps, we still compact only if needed later by "Normalize"
+        next = Math.max(next, cur + 1);
+      }
     }
   }
 
-  if (!updates.length) return { changed: 0, modules: groups.size };
-  if (!dryRun) await batchPatch(AIRTABLE.TABLE_ID, updates);
-  return { changed: updates.length, modules: groups.size };
-}
-
-async function normalizeOrdersForModule(moduleName, { dryRun = false } = {}) {
-  const moduleField = "Module";
-  const orderField  = "Order";
-
-  if (!moduleName) return { changed: 0, module: "" };
-
-  // Fetch only this module
-  const esc = s => String(s || "").replace(/'/g, "\\'");
-  const data = await listAll({
-    tableId: AIRTABLE.TABLE_ID,
-    pageSize: 100,
-    sortField: orderField,
-    sortDir: "asc",
-    filterByFormula: `LOWER(TRIM({${moduleField}}))='${esc(moduleName.toLowerCase())}'`
-  });
-  const items = (data.records || []).slice();
-
-  items.sort((a, b) => {
-    const ao = Number(a.fields?.[orderField]); const bo = Number(b.fields?.[orderField]);
-    const an = Number.isFinite(ao) ? ao : Number.POSITIVE_INFINITY;
-    const bn = Number.isFinite(bo) ? bo : Number.POSITIVE_INFINITY;
-    if (an !== bn) return an - bn;
-    const aq = String(a.fields?.Question || "");
-    const bq = String(b.fields?.Question || "");
-    return aq.localeCompare(bq);
-  });
-
-  const updates = [];
-  let n = 1;
-  for (const r of items) {
-    const cur = Number(r.fields?.[orderField]);
-    if (cur !== n) updates.push({ id: r.id, fields: { [orderField]: n } });
-    n++;
-  }
-
-  if (!updates.length) return { changed: 0, module: moduleName };
-  if (!dryRun) await batchPatch(AIRTABLE.TABLE_ID, updates);
-  return { changed: updates.length, module: moduleName };
-}
-// ===== Wire up Normalize buttons =====
-(function wireNormalizeButtons(){
-  const btnAll = document.getElementById("btnNormalizeAll");
-  const btnOne = document.getElementById("btnNormalizeForModule");
-  const status = document.getElementById("normalizeStatus");
-
-  async function run(fn, label) {
+  if (updates.length){
     try {
-      if (status) status.textContent = `${label}…`;
-      const res = await fn();
-      toast(`${label} done (${res.changed} updated)`, "ok");
-      if (status) status.textContent = `${label} done (${res.changed})`;
-      await refreshList(); // refresh UI
+      await updateMany(updates);
+      // refresh cache so UI reflects fixed orders
+      await refreshList();
+      toast(`Auto-fixed ${updates.length} blank/invalid Order values for active questions.`);
+    } catch (e) {
+      console.warn("Auto-fix failed:", e);
+    }
+  }
+}
+async function normalizeOrdersForModule(moduleName){
+  const mod = String(moduleName||"");
+  const rows = state.rows.filter(r => String(r?.fields?.Module||"") === mod);
+  if (!rows.length) return 0;
+
+  // Active rows get a tight sequence 1..N (inactive rows keep their Order but sorted after)
+  const active = rows.filter(r => !!r.fields?.Active);
+  const inactive = rows.filter(r => !r.fields?.Active);
+
+  const sortedActive = [...active].sort((a,b)=> orderKey(a.fields?.Order) - orderKey(b.fields?.Order));
+  const updates = [];
+
+  let seq = 1;
+  for (const r of sortedActive){
+    if (Number(r.fields?.Order) !== seq){
+      updates.push({ id: r.id, fields: { "Order": seq } });
+    }
+    seq++;
+  }
+  // (Optionally: push inactives to a high range to avoid interleaving)
+  // Not strictly required; training ignores inactive anyway.
+
+  if (updates.length){
+    await updateMany(updates);
+  }
+  return updates.length;
+}
+async function normalizeAllModules(){
+  const byMod = splitModuleRows();
+  let total = 0;
+  for (const [mod] of byMod.entries()){
+    total += await normalizeOrdersForModule(mod);
+  }
+  return total;
+}
+
+// ========= Titles (load + helpers) – unchanged skeletons (safe no-ops if absent) =========
+// (We keep these minimal to avoid breaking pages that don’t render the linker UI.)
+function updateTitleCount(){ if (ui.titleCount) ui.titleCount.textContent = String(state.titles?.length || 0); }
+function renderModuleTitleLinker(){} // intentionally left as no-op here
+function renderModuleList(){}         // intentionally left as no-op here
+
+// ========= Wire up =========
+function wire(){
+  ui.btnRefresh?.addEventListener("click", refreshList);
+  ui.search?.addEventListener("input", debounce(()=> renderModulesView(filterRows(ui.search.value)), 150));
+  ui.fltActive?.addEventListener("change", ()=> renderModulesView(filterRows(ui.search?.value||"")));
+  ui.fltInactive?.addEventListener("change", ()=> renderModulesView(filterRows(ui.search?.value||"")));
+
+  ui.questionType?.addEventListener("change", updateTypeVisibility);
+  ui.moduleSelect?.addEventListener("change", toggleModuleNewVisibility);
+  ui.btnAddOption?.addEventListener("click", ()=> addOption(""));
+  ui.btnClearOptions?.addEventListener("click", ()=> setOptions(["",""]));
+
+  // Save (create new row)
+  ui.btnSaveQuestion?.addEventListener("click", async ()=>{
+    try{
+      const fields = readForm();
+      await createRecord(fields);
+      toast("Saved.");
+      resetForm();
+      await refreshList();
+    } catch(e){
+      console.error(e);
+      toast(e?.message || "Save failed", "bad");
+    }
+  });
+
+  // Normalize buttons (present in your admin.html toolbar)  :contentReference[oaicite:4]{index=4}
+  ui.btnNormalizeAll?.addEventListener("click", async ()=>{
+    if (ui.normalizeStatus) ui.normalizeStatus.textContent = "Normalizing all modules…";
+    try {
+      const changed = await normalizeAllModules();
+      if (ui.normalizeStatus) ui.normalizeStatus.textContent = `Updated ${changed} records.`;
+      await refreshList();
+      toast("Normalized Order across all modules.");
     } catch (e) {
       console.error(e);
-      toast(e.message || `${label} failed`, "bad");
-      if (status) status.textContent = "Error";
+      if (ui.normalizeStatus) ui.normalizeStatus.textContent = "Normalize failed.";
+      toast("Normalize failed", "bad");
     }
-  }
+  });
 
-  if (btnAll) {
-    btnAll.addEventListener("click", () => {
-      run(() => normalizeAllOrdersByModule({ dryRun: false }), "Normalize all");
-    });
-  }
-  if (btnOne) {
-    btnOne.addEventListener("click", () => {
-      const sel = document.getElementById("moduleSelect");
-      const typed = (document.getElementById("moduleInput")?.value || "").trim();
-      const value = sel && sel.value !== "__ADD_NEW__" ? (sel.value || "") : typed;
-      if (!value) return toast("Pick or type a module first.", "bad");
-      run(() => normalizeOrdersForModule(value, { dryRun: false }), `Normalize "${value}"`);
-    });
-  }
-})();
-
-// =============================
-// Bulk Import / Export (CSV)
-// =============================
-(function(){
-  "use strict";
-
-  // === Columns used in template + mapping ===
-  const CSV_COLUMNS = [
-    "Type",                       // "MC" or "FITB"
-    "Question",
-    "Options (JSON)",             // MC only: ["A","B","C"]
-    "Correct",                    // MC only: exact option text
-    "FITB Answers (JSON)",        // FITB only: ["foo","bar"]
-    "FITB Use Regex",             // true/false
-    "FITB Case Sensitive",        // true/false
-    "Module",
-    "Slide ID",
-    "Order",                      // number; if blank, we’ll auto-append
-    "Active",                     // true/false
-    "Required",                   // true/false
-    "QuestionId"                  // if blank, importer will auto-generate
-  ];
-
-  // === DOM
-  const dom = {
-    root:              document.getElementById("bulk-root"),
-    downloadTemplate:  document.getElementById("bulk-download-template"),
-    exportBtn:         document.getElementById("bulk-export"),
-    file:              document.getElementById("bulk-file"),
-    parseBtn:          document.getElementById("bulk-parse"),
-    status:            document.getElementById("bulk-status"),
-    previewWrap:       document.getElementById("bulk-preview-wrap"),
-    dryRun:            document.getElementById("bulk-dryrun"),
-    runBtn:            document.getElementById("bulk-run"),
-  };
-
-  if (!dom.root) return; // panel not on this page
-
-  // === Utilities
-  const toBool = (v) => {
-    const s = String(v ?? "").trim().toLowerCase();
-    return s === "1" || s === "true" || s === "yes" || s === "y";
-  };
-
-  const safeJSON = (s) => {
-    try {
-      const v = JSON.parse(String(s ?? "").trim());
-      return Array.isArray(v) ? v : [];
-    } catch { return []; }
-  };
-
-  function genQuestionId(prefix="q"){ return `${prefix}_${Math.random().toString(36).slice(2,8)}`; }
-
-  function downloadBlob(filename, text){
-    const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 0);
-  }
-
-  // Robust CSV stringifier (RFC4180-ish)
-  function toCsvValue(v){
-    const s = v == null ? "" : String(v);
-    if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-    return s;
-  }
-  function toCsv(rows){
-    const head = CSV_COLUMNS.map(toCsvValue).join(",") + "\r\n";
-    const body = rows.map(r => CSV_COLUMNS.map(k => toCsvValue(r[k])).join(",")).join("\r\n");
-    return head + body + "\r\n";
-  }
-
-  // Tiny CSV parser that respects quotes and commas/CRLFs inside quotes
-  function parseCsv(text){
-    const out = [];
-    let row = [];
-    let val = "";
-    let i = 0, inQuotes = false;
-    while (i < text.length){
-      const ch = text[i];
-
-      if (inQuotes){
-        if (ch === '"'){
-          if (text[i+1] === '"'){ val += '"'; i += 2; continue; }
-          inQuotes = false; i++; continue;
-        }
-        val += ch; i++; continue;
-      }
-
-      if (ch === '"'){ inQuotes = true; i++; continue; }
-      if (ch === ","){ row.push(val); val = ""; i++; continue; }
-      if (ch === "\r"){
-        if (text[i+1] === "\n") i++;
-        row.push(val); out.push(row); row = []; val = ""; i++; continue;
-      }
-      if (ch === "\n"){ row.push(val); out.push(row); row = []; val = ""; i++; continue; }
-
-      val += ch; i++;
-    }
-    // last value
-    row.push(val);
-    // only push if not a trailing empty row
-    if (row.length > 1 || (row.length === 1 && row[0] !== "")) out.push(row);
-    return out;
-  }
-
-  function headerIndexMap(headerRow){
-    const map = Object.create(null);
-    CSV_COLUMNS.forEach((name) => {
-      const idx = headerRow.findIndex(h => String(h).trim().toLowerCase() === name.toLowerCase());
-      map[name] = idx;
-    });
-    return map;
-  }
-
-  function rowToObj(headerMap, cells){
-    const obj = {};
-    CSV_COLUMNS.forEach((name) => {
-      const i = headerMap[name];
-      obj[name] = (i >= 0 ? cells[i] : "");
-    });
-    return obj;
-  }
-
-  function normalizeRow(r){
-    const Type = String(r["Type"] || "").toUpperCase().trim();
-    const Question = String(r["Question"] || "").trim();
-    const Module = String(r["Module"] || "").trim();
-    const Slide = String(r["Slide ID"] || "").trim();
-    const Order = Number(r["Order"] || "");
-    const Active = toBool(r["Active"]);
-    const Required = ("Required" in r) ? toBool(r["Required"]) : true;
-    const QuestionId = String(r["QuestionId"] || "").trim();
-
-    let fields = {
-      "Type": (Type === "FITB" ? "FITB" : "MC"),
-      "Question": Question,
-      "Module": Module || undefined,
-      "Slide ID": Slide || "",
-      "Order": (Number.isFinite(Order) && Order > 0) ? Order : undefined,
-      "Active": Active,
-      "Required": Required,
-      "QuestionId": QuestionId || genQuestionId("q")
-    };
-
-    if (fields["Type"] === "MC"){
-      const opts = safeJSON(r["Options (JSON)"]);
-      const correct = String(r["Correct"] || "");
-      fields["Options (JSON)"] = JSON.stringify(opts);
-      fields["Correct"] = correct || "";
-      fields["FITB Answers (JSON)"] = undefined;
-      fields["FITB Use Regex"] = undefined;
-      fields["FITB Case Sensitive"] = undefined;
-    } else {
-      const answers = safeJSON(r["FITB Answers (JSON)"]);
-      fields["FITB Answers (JSON)"] = JSON.stringify(answers);
-      fields["FITB Use Regex"] = toBool(r["FITB Use Regex"]);
-      fields["FITB Case Sensitive"] = toBool(r["FITB Case Sensitive"]);
-      fields["Options (JSON)"] = undefined;
-      fields["Correct"] = undefined;
-    }
-    return fields;
-  }
-
-  // Build a fast lookup for existing questions by QuestionId
-  function buildExistingIndex(){
-    const idx = Object.create(null);
-    (Array.isArray(state.rows) ? state.rows : []).forEach(r => {
-      const qid = String(r?.fields?.QuestionId || "").trim();
-      if (qid) idx[qid.toLowerCase()] = r.id;
-    });
-    return idx;
-  }
-
-  // ============ EXPORT ============
-  async function onExport(){
-    try {
-      // Ensure freshest view
-      await refreshList(); // uses your existing listAll → state.rows
-      const rows = (state.rows || []).map(r => {
-        const f = r.fields || {};
-        return {
-          "Type": String(f["Type"] || ""),
-          "Question": String(f["Question"] || ""),
-          "Options (JSON)": String(f["Options (JSON)"] || ""),
-          "Correct": String(f["Correct"] || ""),
-          "FITB Answers (JSON)": String(f["FITB Answers (JSON)"] || ""),
-          "FITB Use Regex": String(f["FITB Use Regex"] ?? ""),
-          "FITB Case Sensitive": String(f["FITB Case Sensitive"] ?? ""),
-          "Module": String(f["Module"] || ""),
-          "Slide ID": String(f["Slide ID"] || ""),
-          "Order": String(f["Order"] ?? ""),
-          "Active": String(f["Active"] ?? ""),
-          "Required": String(f["Required"] ?? ""),
-          "QuestionId": String(f["QuestionId"] || "")
-        };
-      });
-      const csv = toCsv(rows);
-      downloadBlob(`questions-export-${Date.now()}.csv`, csv);
-      toast?.("Exported.", "ok");
-    } catch (e){
-      console.error(e);
-      toast?.("Export failed.", "bad");
-    }
-  }
-
-  // ============ TEMPLATE ============
-  function onDownloadTemplate(){
-    const example = [{
-      "Type": "MC",
-      "Question": "What color is the sky?",
-      "Options (JSON)": '["Blue","Green","Red"]',
-      "Correct": "Blue",
-      "FITB Answers (JSON)": "",
-      "FITB Use Regex": "",
-      "FITB Case Sensitive": "",
-      "Module": "Basics",
-      "Slide ID": "",
-      "Order": "1",
-      "Active": "true",
-      "Required": "true",
-      "QuestionId": "q_example123"
-    },{
-      "Type": "FITB",
-      "Question": "_____ is the capital of France.",
-      "Options (JSON)": "",
-      "Correct": "",
-      "FITB Answers (JSON)": '["Paris"]',
-      "FITB Use Regex": "false",
-      "FITB Case Sensitive": "false",
-      "Module": "Geography",
-      "Slide ID": "",
-      "Order": "2",
-      "Active": "true",
-      "Required": "true",
-      "QuestionId": ""
-    }];
-    const csv = toCsv(example);
-    downloadBlob("questions-template.csv", csv);
-  }
-
-  // ============ PREVIEW / IMPORT ============
-  let parsedItems = [];   // normalized Airtable fields per row
-  let rawRows = [];       // original row objects (for preview)
-
-  function renderPreview(rows, errs){
-    if (!rows || rows.length === 0){
-      dom.previewWrap.innerHTML = `<div class="muted">No rows found in CSV.</div>`;
-      dom.runBtn.disabled = true;
-      return;
-    }
-    const header = `
-      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px">
-        <div class="muted small">${rows.length} row(s) parsed.</div>
-        <div class="legend">
-          <span class="badge all">create</span>
-          <span class="badge some">update</span>
-          <span class="badge none">error</span>
-        </div>
-      </div>`;
-
-    // Build existing index by QuestionId to label row intent
-    const idx = buildExistingIndex();
-
-    const tableHead = `
-      <thead>
-        <tr>
-          <th style="text-align:left;padding:6px 8px">Action</th>
-          <th style="text-align:left;padding:6px 8px">QuestionId</th>
-          <th style="text-align:left;padding:6px 8px">Type</th>
-          <th style="text-align:left;padding:6px 8px">Question</th>
-          <th style="text-align:left;padding:6px 8px">Module</th>
-          <th style="text-align:left;padding:6px 8px">Order</th>
-          <th style="text-align:left;padding:6px 8px">Error</th>
-        </tr>
-      </thead>`;
-
-    const bodyRows = rows.map((r, i) => {
-      const qid = String(r?.fields?.["QuestionId"] || "").trim();
-      const err = errs[i] || "";
-      let action = "create";
-      let cls = "all";
-      if (qid && idx[qid.toLowerCase()]) { action = "update"; cls = "some"; }
-      if (err) { action = "error"; cls = "none"; }
-
-      const f = r.fields || {};
-      const orderDisp = (f["Order"] != null) ? String(f["Order"]) : "auto";
-
-      return `<tr>
-        <td class="badge ${cls}" style="padding:6px 8px;text-transform:capitalize">${action}</td>
-        <td style="padding:6px 8px">${qid || "—"}</td>
-        <td style="padding:6px 8px">${f["Type"] || ""}</td>
-        <td style="padding:6px 8px">${(f["Question"] || "").slice(0,100)}</td>
-        <td style="padding:6px 8px">${f["Module"] || ""}</td>
-        <td style="padding:6px 8px">${orderDisp}</td>
-        <td style="padding:6px 8px;color:#b91c1c">${err}</td>
-      </tr>`;
-    }).join("");
-
-    dom.previewWrap.innerHTML = header + `
-      <div style="overflow:auto;border:1px solid #e5e7eb;border-radius:10px">
-        <table style="width:100%;border-collapse:collapse;font-size:12px">
-          ${tableHead}
-          <tbody>${bodyRows}</tbody>
-        </table>
-      </div>
-    `;
-
-    // Enable import if there is at least one non-error row
-    const anyOk = errs.some(Boolean) ? errs.some(e => !e) : rows.length > 0;
-    dom.runBtn.disabled = !anyOk;
-  }
-
-  async function onPreview(){
-    dom.status.textContent = "Reading file…";
-    dom.status.className = "muted small";
-    dom.runBtn.disabled = true;
-    dom.previewWrap.innerHTML = `<div class="muted">Parsing…</div>`;
-    parsedItems = [];
-    rawRows = [];
-
-    const file = dom.file?.files?.[0];
-    if (!file){
-      dom.previewWrap.innerHTML = `<div class="muted">Choose a CSV file first.</div>`;
-      dom.status.textContent = "No file selected.";
-      return;
-    }
-
-    const text = await file.text();
-    const rows = parseCsv(text);
-    if (!rows.length){
-      dom.previewWrap.innerHTML = `<div class="muted">Empty CSV.</div>`;
-      dom.status.textContent = "Nothing to preview.";
-      return;
-    }
-    const header = rows[0];
-    const map = headerIndexMap(header);
-
-    // Validate header coverage
-    const missing = CSV_COLUMNS.filter(k => map[k] < 0);
-    if (missing.length){
-      dom.previewWrap.innerHTML = `<div class="bad">Missing required header(s): ${missing.join(", ")}</div>`;
-      dom.status.textContent = "Fix the headers and try again.";
-      return;
-    }
-
-    // Convert to list of Airtable field maps + collect row-level validation errors
-    const errors = [];
-    for (let i = 1; i < rows.length; i++){
-      const obj = rowToObj(map, rows[i]);
-      const fields = normalizeRow(obj);
-
-      // Basic validation
-      let err = "";
-      if (!fields["Question"]) err = "Question is required.";
-      if (fields["Type"] === "MC"){
-        const arr = safeJSON(obj["Options (JSON)"]);
-        if (!arr.length) err = err || "MC requires Options (JSON) with at least 1 option.";
-      } else {
-        const a = safeJSON(obj["FITB Answers (JSON)"]);
-        if (!a.length) err = err || "FITB requires FITB Answers (JSON) with at least 1 answer.";
-      }
-
-      parsedItems.push({ fields });
-      rawRows.push(obj);
-      errors.push(err);
-    }
-
-    dom.status.textContent = "Preview ready.";
-    renderPreview(parsedItems, errors);
-  }
-
-  // Batch helper for PATCH/POST (10 per request)
-  async function batchWrite(updates, method){
-    const BATCH = 10;
-    let written = 0;
-    for (let i = 0; i < updates.length; i += BATCH) {
-      const chunk = updates.slice(i, i + BATCH);
-      const body = (method === "PATCH")
-        ? { records: chunk.map(({ id, fields }) => ({ id, fields })), typecast: true }
-        : { records: chunk.map(({ fields }) => ({ fields })), typecast: true };
-
-      const res = await fetch(baseUrl(), {
-        method,
-        headers: qHeaders ? qHeaders() : headers(), // prefer Questions headers if available
-        body: JSON.stringify(body)
-      });
-      if (!res.ok) throw new Error(`${method} failed: HTTP ${res.status} – ${await res.text().catch(()=>"(no body)")}`);
-      const data = await res.json();
-      written += (data.records || []).length;
-    }
-    return written;
-  }
-
-  async function onImport(){
-    try {
-      dom.status.textContent = "Importing…";
-      dom.status.className = "muted small";
-      dom.runBtn.disabled = true;
-
-      // Always refresh to get latest state.rows → for upsert by QuestionId
+  ui.btnNormalizeForModule?.addEventListener("click", async ()=>{
+    // Try to detect the first expanded module in the UI; if none, use current select value.
+    const expanded = $(".mod-head[aria-expanded='true']")?.parentElement?.getAttribute("data-mod") || currentModuleValue();
+    if (!expanded) { toast("Open a module group or select one, then click Normalize.", "warn"); return; }
+    if (ui.normalizeStatus) ui.normalizeStatus.textContent = `Normalizing “${expanded}”…`;
+    try{
+      const changed = await normalizeOrdersForModule(expanded);
+      if (ui.normalizeStatus) ui.normalizeStatus.textContent = `Module “${expanded}”: updated ${changed} records.`;
       await refreshList();
-
-      const idx = buildExistingIndex();
-      const creates = [];
-      const updates = [];
-
-      // Auto-fill Order if missing (append to module’s max)
-      const maxByModule = Object.create(null);
-      (state.rows || []).forEach(r => {
-        const f = r.fields || {};
-        const m = String(f.Module || "");
-        const ord = Number(f.Order || 0);
-        if (!maxByModule[m]) maxByModule[m] = 0;
-        if (Number.isFinite(ord) && ord > maxByModule[m]) maxByModule[m] = ord;
-      });
-
-      for (const item of parsedItems){
-        const f = item.fields;
-        // auto-assign order if missing
-        if (f["Order"] == null){
-          const m = String(f["Module"] || "");
-          const cur = maxByModule[m] || 0;
-          maxByModule[m] = cur + 1;
-          f["Order"] = maxByModule[m];
-        }
-
-        const qid = String(f["QuestionId"] || "").trim().toLowerCase();
-        if (qid && idx[qid]){
-          updates.push({ id: idx[qid], fields: f });
-        } else {
-          creates.push({ fields: f });
-        }
-      }
-
-      if (dom.dryRun?.checked){
-        dom.status.textContent = `Dry-run: would create ${creates.length}, update ${updates.length}.`;
-        dom.status.className = "ok";
-        dom.runBtn.disabled = false; // allow re-run after dry-run toggle off
-        return;
-      }
-
-      // Write
-      let written = 0;
-      if (creates.length) written += await batchWrite(creates, "POST");
-      if (updates.length) written += await batchWrite(updates, "PATCH");
-
-      dom.status.textContent = `Imported ${written} record(s): created ${creates.length}, updated ${updates.length}.`;
-      dom.status.className = "ok";
-
-      await refreshList(); // show latest list
-      toast?.("Import complete", "ok");
-
-    } catch (e){
+      toast(`Normalized Order in “${expanded}”.`);
+    } catch (e) {
       console.error(e);
-      dom.status.textContent = e?.message || "Import failed.";
-      dom.status.className = "bad";
-      dom.runBtn.disabled = false;
+      if (ui.normalizeStatus) ui.normalizeStatus.textContent = "Normalize failed.";
+      toast("Normalize failed", "bad");
     }
-  }
+  });
 
-  // Wire events
-  dom.downloadTemplate?.addEventListener("click", onDownloadTemplate);
-  dom.exportBtn?.addEventListener("click", onExport);
-  dom.parseBtn?.addEventListener("click", onPreview);
-  dom.runBtn?.addEventListener("click", onImport);
+  // Initial UI state
+  updateTypeVisibility();
+  toggleModuleNewVisibility();
 
-})();
+  // First load
+  refreshList();
+}
+
+// Boot
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", wire, { once:true });
+} else {
+  wire();
+}

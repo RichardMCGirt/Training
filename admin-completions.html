@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Admin – Module Completion</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <style>
+    :root {
+      --bg:#fafafa; --card:#fff; --ink:#111; --muted:#666;
+      --line:#e8e8e8; --ok:#16a34a; --warn:#eab308; --bad:#ef4444;
+      --chip:#eef2ff;
+    }
+    html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;}
+    .wrap{max-width:1200px;margin:24px auto;padding:0 16px;}
+    header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px;}
+    h1{font-size:20px;margin:0;}
+    .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.04);}
+    .controls{padding:12px;border-bottom:1px solid var(--line)}
+    .muted{color:var(--muted)}
+    input[type="text"]{padding:8px 10px;border:1px solid var(--line);border-radius:8px;min-width:260px}
+    .btn{padding:8px 12px;border:1px solid var(--line);background:#fff;border-radius:8px;cursor:pointer}
+    .btn.primary{background:#111;color:#fff;border-color:#111}
+    .table-wrap{overflow:auto}
+    table{border-collapse:collapse;width:100%;min-width:900px}
+    th,td{padding:10px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+    th{background:#f6f6f6;text-align:left;position:sticky;top:0;z-index:1}
+    .mono{font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace}
+    .pill{display:inline-block;padding:.1rem .5rem;border-radius:999px;font-size:12px;background:var(--chip)}
+    .right{color:var(--ok);font-weight:600}
+    .warn{color:var(--warn);font-weight:600}
+    .bad{color:var(--bad);font-weight:600}
+    .bar{height:8px;background:#eee;border-radius:999px;overflow:hidden}
+    .bar > i{display:block;height:100%;background:#111}
+    .tiny{font-size:12px}
+    tfoot td{padding:14px 8px}
+    .status{margin-left:auto}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Admin – Module Completion</h1>
+      <div class="row">
+        <span class="muted tiny">Signed in as:</span>
+        <strong id="adminEmail" class="mono"></strong>
+        <button id="btnLogout" class="btn">Log out</button>
+      </div>
+    </header>
+
+    <div class="card controls">
+      <div class="row">
+        <input id="search" type="text" placeholder="Search by user or module…" />
+        <button id="btnRefresh" class="btn">Refresh</button>
+        <button id="btnExport" class="btn">Export CSV</button>
+        <span id="scanStatus" class="muted status"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="table-wrap">
+        <table id="grid">
+          <thead>
+            <tr>
+              <th style="min-width:220px">User</th>
+              <th style="min-width:260px">Assigned Modules</th>
+              <th>Per-Module Progress</th>
+              <th style="min-width:120px">Overall Score</th>
+              <th style="min-width:120px">All Assigned Complete?</th>
+            </tr>
+          </thead>
+          <tbody id="tbody">
+            <tr><td colspan="5" class="muted">Loading…</td></tr>
+          </tbody>
+          <tfoot>
+            <tr>
+              <td colspan="5" class="muted tiny">
+                Counts use active questions per module and the latest correctness per (PresentationId, QuestionId).
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Existing helpers you already ship -->
+  <script src="auth.js"></script>
+  <script src="modules.js"></script>
+
+  <!-- New logic for this page -->
+  <script src="admin-completions.js"></script>
+  <script>
+    // Gate like your other admin pages
+    if (typeof requireAuthOrRedirect === "function") requireAuthOrRedirect();
+  </script>
+</body>
+</html>
