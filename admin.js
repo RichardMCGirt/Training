@@ -1212,6 +1212,16 @@ function renderModuleList(){
 
   updateAssignStatusText();
 }
+function filterTitlesAndRender(){
+  const q = (ui.titleSearch?.value || "").toLowerCase().trim();
+  const list = q
+    ? state.titles.filter(t => String(t.title || "").toLowerCase().includes(q))
+    : state.titles;
+  populateTitleSelect(list);     
+  updateTitleCount();           
+  renderModuleList();           
+}
+
 function getSelectedTitleIds(){
   const sel = ui.titleSelect;
   if (!sel) return [];
@@ -1228,6 +1238,14 @@ async function wire(){
 
   ui.questionType?.addEventListener("change", updateTypeVisibility);
   ui.moduleSelect?.addEventListener("change", toggleModuleNewVisibility);
+// --- Assign Modules to Titles: search wiring ---
+ui.moduleSearch?.addEventListener('input', () => {
+  renderModuleList();          
+});
+
+ui.titleSearch?.addEventListener('input', () => {
+  filterTitlesAndRender();
+});
 
   ui.btnAddOption?.addEventListener("click", () => {
     const type = (ui.questionType?.value || "MC").toUpperCase();
