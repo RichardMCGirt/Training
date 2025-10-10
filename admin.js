@@ -508,6 +508,152 @@ function fillForm(fields){
 function optionExists(selectEl, value){
   return Array.from(selectEl.options).some(o => o.value === value);
 }
+function detectMappingFieldNameFromRecordFields(fieldsObj){
+  if (!fieldsObj) return null;
+  const keys = Object.keys(fieldsObj);
+  const want = String(AIRTABLE.TITLES_MAPPING_FIELD || "").toLowerCase();
+  if (want) {
+    const exact = keys.find(k => k.toLowerCase() === want);
+    if (exact) return exact;
+  }
+  // optional nicety; OK if absent
+  const cand = keys.find(k => {
+    const s = k.toLowerCase();
+    return (s.includes("mapping") || s.includes("map")) && s.includes("assigned");
+  });
+  return cand || null; // may be null; we’ll conditionally skip it when patching
+}
+async function assignSelected(){
+  const selectedIds = getSelectedTitleIds();
+  if (!selectedIds.length) return toast("Select at least one title.", "bad");
+  if (!state.selectedModules.size) return toast("Pick module(s) to assign.", "bad");
+
+  const mods = Array.from(state.selectedModules).sort((a,b)=>a.localeCompare(b));
+  const updates = [];
+
+  selectedIds.forEach(id => {
+    const t = state.titles.find(x => x.id === id);
+    const set = new Set([...(t?.assigned || []), ...mods]);
+    const assigned = Array.from(set).sort((a,b)=>a.localeCompare(b));
+    updates.push({
+      id,
+      fields: buildTitleUpdateFields({
+        titleText: t?.title || "",
+        assignedArray: assigned,
+        assignedFieldName: state.assignedFieldName,   // may be detected name
+        mappingFieldName:  state.mappingFieldName     // may be null → skipped
+      })
+    });
+  });
+
+  await batchPatch(AIRTABLE.TITLES_TABLE_ID, updates);
+  toast("Assigned.", "ok");
+  state.selectedModules.clear();
+  await fetchDistinctTitles();
+  renderModuleList();
+  renderModuleTitleLinker();
+}
+
+async function unassignSelected(){
+  const selectedIds = getSelectedTitleIds();
+  if (!selectedIds.length) return toast("Select at least one title.", "bad");
+  if (!state.selectedModules.size) return toast("Pick module(s) to unassign.", "bad");
+
+  const updates = [];
+
+  selectedIds.forEach(id => {
+    const t = state.titles.find(x => x.id === id);
+    const assigned = (t?.assigned || []).filter(m => !state.selectedModules.has(m)).sort((a,b)=>a.localeCompare(b));
+    updates.push({
+      id,
+      fields: buildTitleUpdateFields({
+        titleText: t?.title || "",
+        assignedArray: assigned,
+        assignedFieldName: state.assignedFieldName,
+        mappingFieldName:  state.mappingFieldName
+      })
+    });
+  });
+
+  await batchPatch(AIRTABLE.TITLES_TABLE_ID, updates);
+  toast("Unassigned.", "ok");
+  state.selectedModules.clear();
+  await fetchDistinctTitles();
+  renderModuleList();
+  renderModuleTitleLinker();
+}
+
+async function assignOne(titleId, moduleName){
+  const t = state.titles.find(x => x.id === titleId);
+  const set = new Set([...(t?.assigned || []), moduleName]);
+  const assigned = Array.from(set).sort((a,b)=>a.localeCompare(b));
+  await batchPatch(AIRTABLE.TITLES_TABLE_ID, [{
+    id: titleId,
+    fields: buildTitleUpdateFields({
+      titleText: t?.title || "",
+      assignedArray: assigned,
+      assignedFieldName: state.assignedFieldName,
+      mappingFieldName:  state.mappingFieldName
+    })
+  }]);
+}
+async function listAllTitlesPage(offset){
+  return listAll({
+    tableId: AIRTABLE.TITLES_TABLE_ID,
+    pageSize: 100,
+    offset,
+    sortField: AIRTABLE.TITLES_FIELD_NAME,
+    sortDir: "asc",
+  });
+}
+
+async function unassignOne(titleId, moduleName){
+  const t = state.titles.find(x => x.id === titleId);
+  const assigned = (t?.assigned || []).filter(m => m !== moduleName).sort((a,b)=>a.localeCompare(b));
+  await batchPatch(AIRTABLE.TITLES_TABLE_ID, [{
+    id: titleId,
+    fields: buildTitleUpdateFields({
+      titleText: t?.title || "",
+      assignedArray: assigned,
+      assignedFieldName: state.assignedFieldName,
+      mappingFieldName:  state.mappingFieldName
+    })
+  }]);
+}
+
+function detectAssignedFieldNameFromRecordFields(fieldsObj){
+  if (!fieldsObj) return null;
+  const keys = Object.keys(fieldsObj);
+  // exact match if configured
+  const want = String(AIRTABLE.TITLES_ASSIGNED_FIELD || "").toLowerCase();
+  if (want) {
+    const exact = keys.find(k => k.toLowerCase() === want);
+    if (exact) return exact;
+  }
+  // heuristics
+  const byKeywords = keys.find(k => {
+    const s = k.toLowerCase();
+    return (s.includes("assigned") && s.includes("module")) || s === "assigned modules";
+  });
+  if (byKeywords) return byKeywords;
+  // last-chance: any field containing "module"
+  return keys.find(k => k.toLowerCase().includes("module")) || null;
+}
+function buildTitleUpdateFields({ titleText, assignedArray, assignedFieldName, mappingFieldName }){
+  const fields = {};
+  if (assignedFieldName) {
+    fields[assignedFieldName] = (assignedArray || []).join("\n");
+  }
+  if (mappingFieldName) {
+    fields[mappingFieldName] = `${titleText || ""}: ${ (assignedArray || []).join(", ") }`;
+  }
+  return fields;
+}
+function cleanAssignedList(v){
+  if (!v) return [];
+  // Accept newline/comma/semicolon separated
+  return String(v).split(/[\n,;]+/g).map(s => s.trim()).filter(Boolean);
+}
 function resetForm(){
   if (ui.questionType) ui.questionType.value = "MC";
   updateTypeVisibility();
@@ -677,27 +823,26 @@ function renderModulesView(rows){
     });
   });
 }
-
+function buildModuleToTitlesMap(){
+  const map = new Map();
+  const allModules = new Set([ ...Array.from(state.modules), ...Array.from(state.manualModules) ]);
+  state.titles.forEach(t => (t.assigned||[]).forEach(m => allModules.add(m)));
+  allModules.forEach(m => map.set(m, []));
+  state.titles.forEach(t => { (t.assigned || []).forEach(m => { if (!map.has(m)) map.set(m, []); map.get(m).push({ id: t.id, title: t.title }); }); });
+  return map;
+}
 // ========= List / search / paging =========
 async function refreshList(){
   if (ui.listStatus) ui.listStatus.textContent = "Loading…";
   try {
-    // Sort by Order asc; if some rows have blank Order, we'll correct later
     const data = await listAll({ tableId: AIRTABLE.TABLE_ID, pageSize: 100, sortField:"Order", sortDir:"asc" });
     state.rows = data.records || [];
-
-    // Build module set (ignore blanks)
     state.modules = new Set(state.rows.map(r => (r.fields||{}).Module).filter(Boolean));
     populateModuleSelect(state.modules);
-
     renderModulesView(filterRows(ui.search ? ui.search.value : ""));
     if (ui.listStatus) ui.listStatus.textContent = `Loaded ${state.rows.length} question${state.rows.length===1?"":"s"}.`;
-
-    // If any Active rows have missing/bad Order, auto-fix in the background to prevent training breaks.
-    await autoFixEmptyOrdersForActive();
-
-    // If you show Titles/Assignments on this page, you can render/link them here (left intact).
-    // renderModuleList(); renderModuleTitleLinker();  // (no-ops if elements aren’t on the page)
+    renderModuleList();
+    renderModuleTitleLinker();
   } catch (e) {
     console.error("[Admin] refreshList failed:", e);
     if (ui.listStatus) ui.listStatus.textContent = "Load failed.";
@@ -792,15 +937,290 @@ async function normalizeAllModules(){
   }
   return total;
 }
-
+function titlesNotLinkedToModule(moduleName){
+  const linkedIds = new Set((buildModuleToTitlesMap().get(moduleName) || []).map(t => t.id));
+  return state.titles.filter(t => !linkedIds.has(t.id));
+}
 // ========= Titles (load + helpers) – unchanged skeletons (safe no-ops if absent) =========
 // (We keep these minimal to avoid breaking pages that don’t render the linker UI.)
-function updateTitleCount(){ if (ui.titleCount) ui.titleCount.textContent = String(state.titles?.length || 0); }
-function renderModuleTitleLinker(){} // intentionally left as no-op here
-function renderModuleList(){}         // intentionally left as no-op here
 
+function updateTitleCount(){
+  if (!ui.titleCount) return;
+  const total = state.titles.length;
+  const selected = getSelectedTitleIds().length;
+  ui.titleCount.textContent = `${total} titles • ${selected} selected`;
+}
+function renderModuleTitleLinker(){
+  if (!ui.modTitleList) return;
+  const map = buildModuleToTitlesMap();
+  const modules = Array.from(map.keys()).sort((a,b)=>a.localeCompare(b));
+  if (modules.length === 0){
+    ui.modTitleList.innerHTML = `<div class="module-empty">No modules yet. Create questions with a Module or add modules above to get started.</div>`;
+    return;
+  }
+
+  const html = [
+    `<div class="modtitle-grid">`,
+    ...modules.map((m, idx) => {
+      const list = map.get(m) || [];
+      const selectId = `mt-add-${idx}`;
+      const options = titlesNotLinkedToModule(m).map(t => `<option value="${esc(t.id)}">${esc(t.title)}</option>`).join("");
+      return `
+        <div class="modtitle-card" data-module="${esc(m)}">
+          <div class="modtitle-head">
+            <div class="modtitle-name">${esc(m)}</div>
+            <div class="muted small">${list.length} title${list.length===1?"":"s"}</div>
+          </div>
+          <div class="chips">
+            ${ list.length
+                ? list.sort((a,b)=>a.title.localeCompare(b.title))
+                      .map(t => `<span class="chip" data-title-id="${esc(t.id)}"><span>${esc(t.title)}</span><span class="x" title="Remove from ${esc(m)}" aria-label="Remove">✕</span></span>`).join("")
+                : `<span class="muted small">No titles linked.</span>`
+            }
+          </div>
+          <div class="addbar">
+            <select id="${selectId}">
+              <option value="">Add title…</option>
+              ${options}
+            </select>
+            <button class="btn" data-add-for="${esc(m)}" data-select="#${selectId}">Add</button>
+          </div>
+        </div>
+      `;
+    }),
+    `</div>`
+  ].join("");
+
+  ui.modTitleList.innerHTML = html;
+
+  // Remove handlers
+  ui.modTitleList.querySelectorAll(".chip .x").forEach(x => {
+    x.addEventListener("click", async (ev) => {
+      const chip = ev.currentTarget.closest(".chip");
+      const card = ev.currentTarget.closest(".modtitle-card");
+      const moduleName = card?.getAttribute("data-module");
+      const titleId = chip?.getAttribute("data-title-id");
+      if (!moduleName || !titleId) return;
+      try {
+        await unassignOne(titleId, moduleName);
+        toast(`Removed "${moduleName}" from selected title.`, "ok");
+        await fetchDistinctTitles();
+        renderModuleTitleLinker();
+        renderModuleList();
+      } catch(e){ console.error(e); toast(e.message || "Unassign failed", "bad"); }
+    });
+  });
+
+  // Add handlers
+  ui.modTitleList.querySelectorAll("[data-add-for]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const moduleName = btn.getAttribute("data-add-for");
+      const sel = ui.modTitleList.querySelector(btn.getAttribute("data-select"));
+      const val = sel ? sel.value : "";
+      if (!moduleName || !val) return;
+      try {
+        await assignOne(val, moduleName);
+        toast(`Added title to "${moduleName}".`, "ok");
+        await fetchDistinctTitles();
+        renderModuleTitleLinker();
+        renderModuleList();
+      } catch(e){ console.error(e); toast(e.message || "Assign failed", "bad"); }
+    });
+  });
+}
+function populateTitleSelect(list){
+  if (!ui.titleSelect) return;
+  const sorted = sortTitlesAZ(Array.isArray(list) ? list : []);
+  ui.titleSelect.innerHTML = sorted
+    .map(t => `\u003Coption value="${esc(t.id)}">${esc(t.title)}\u003C/option>`)
+    .join("");
+}
+function sortTitlesAZ(list){ return (Array.isArray(list) ? [...list] : []).sort((a,b)=> String(a?.title ?? "").trim().localeCompare(String(b?.title ?? "").trim(), undefined, {sensitivity:"base"}) ); }
+function normalizeTitle(v) { if (v == null) return ""; if (typeof v === "string") return v.trim(); if (typeof v === "number") return String(v); if (Array.isArray(v)) { for (const item of v) { if (typeof item === "string") return item.trim(); if (item && typeof item === "object") { if (typeof item.name === "string") return item.name.trim(); if (typeof item.id === "string") return item.id; } } return v.length ? String(v[0]) : ""; } if (typeof v === "object") { if (typeof v.name === "string") return v.name.trim(); return JSON.stringify(v); } try { return String(v); } catch { return ""; } }
+function updateAssignStatusText(){
+  const selectedTitles = getSelectedTitleIds();
+  const mods = Array.from(state.selectedModules);
+  if (!ui.assignStatus) return;
+
+  if (!selectedTitles.length) {
+    ui.assignStatus.textContent = "Select one or more titles, then pick modules.";
+    return;
+  }
+
+  ui.assignStatus.textContent = mods.length
+    ? `Ready: ${mods.length} module(s) selected.`
+    : "All selected titles share the same module set.";
+}
+
+function computeAssignedAgg(selectedIds){ const chosen = state.titles.filter(t => selectedIds.includes(t.id)); const lists = chosen.map(t => new Set((t.assigned || []).map(String))); if (lists.length === 0) return { all: new Set(), some: new Set() }; const union = new Set(); lists.forEach(s => s.forEach(x => union.add(x))); let intersection = new Set(lists[0]); for (let i=1;i<lists.length;i++){ const next = new Set(); lists[i].forEach(x => { if (intersection.has(x)) next.add(x); }); intersection = next; } return { all: intersection, some: union }; }
+function detectTitleFieldNameFromRecordFields(fieldsObj, prefer){
+  if (!fieldsObj) return null;
+  const keys = Object.keys(fieldsObj);
+
+  // honor configured name first (exact or case-insensitive)
+  if (prefer) {
+    const exact = keys.find(k => k === prefer) || keys.find(k => k.toLowerCase() === String(prefer).toLowerCase());
+    if (exact) return exact;
+  }
+
+  // common title-ish candidates
+  const cands = ["Title","Name","Employee Title","Job Title","Position"];
+  const hit = keys.find(k => cands.map(s => s.toLowerCase()).includes(k.toLowerCase()));
+  if (hit) return hit;
+
+  // fallback: first short string field
+  const sample = keys.find(k => typeof fieldsObj[k] === "string" && String(fieldsObj[k]).length < 200);
+  return sample || null;
+}
+
+async function fetchDistinctTitles(){
+  const all = [];
+  let offset;
+
+  state.idsByTitleKey = Object.create(null);
+  state.titleKeyById  = Object.create(null);
+
+  let detectedTitle = null;
+  let detectedAssigned = null;
+  let detectedMapping = null;
+
+  do {
+    const data = await listAllTitlesPage(offset);
+    (data.records || []).forEach(r => {
+      const f = r.fields || {};
+
+      if (!detectedTitle)   detectedTitle   = detectTitleFieldNameFromRecordFields(f, AIRTABLE.TITLES_FIELD_NAME);
+      if (!detectedAssigned)detectedAssigned= detectAssignedFieldNameFromRecordFields(f);
+      if (!detectedMapping) detectedMapping = detectMappingFieldNameFromRecordFields(f);
+
+      const rawTitle = detectedTitle ? f[detectedTitle] : (AIRTABLE.TITLES_FIELD_NAME ? f[AIRTABLE.TITLES_FIELD_NAME] : "");
+      const title = normalizeTitle(rawTitle);
+      if (!title) return;
+
+      const assignedRaw =
+        (typeof f[detectedAssigned] !== "undefined") ? f[detectedAssigned] :
+        (typeof f[AIRTABLE.TITLES_ASSIGNED_FIELD] !== "undefined") ? f[AIRTABLE.TITLES_ASSIGNED_FIELD] : "";
+
+      const assigned = cleanAssignedList(assignedRaw);
+
+      const rec = { id: r.id, title, assigned };
+      all.push(rec);
+
+      const key = title.toLowerCase().trim();
+      state.titleKeyById[r.id] = key;
+      if (!state.idsByTitleKey[key]) state.idsByTitleKey[key] = [];
+      state.idsByTitleKey[key].push(r.id);
+    });
+    offset = data.offset;
+  } while (offset);
+
+  // Persist detections so the rest of the code uses them
+  state.titleFieldName   = detectedTitle   || AIRTABLE.TITLES_FIELD_NAME; // for info only
+  state.assignedFieldName= detectedAssigned|| AIRTABLE.TITLES_ASSIGNED_FIELD;
+  state.mappingFieldName = detectedMapping || null; // mapping field is optional
+
+  console.log("[titles] detected fields", {
+    title: state.titleFieldName,
+    assigned: state.assignedFieldName,
+    mapping: state.mappingFieldName
+  });
+
+  // de-dupe by title text
+  const seen = new Set();
+  const unique = [];
+  for (const row of all) {
+    const key = row.title.toLowerCase();
+    if (!seen.has(key)) { seen.add(key); unique.push(row); }
+  }
+
+  state.titles = sortTitlesAZ(unique);
+  populateTitleSelect(state.titles);
+  updateTitleCount();
+  renderModuleTitleLinker();
+  return state.titles;
+}
+async function batchPatch(tableId, updates){
+  const BATCH = 10;
+  for (let i = 0; i < updates.length; i += BATCH) {
+    const chunk = updates.slice(i, i + BATCH).map(({id, fields}) => {
+      // remove undefined keys and skip if no fields remain
+      const cleaned = {};
+      Object.keys(fields || {}).forEach(k => {
+        if (typeof fields[k] !== "undefined" && fields[k] !== null) cleaned[k] = fields[k];
+      });
+      return { id, fields: cleaned };
+    }).filter(u => u.id && u.fields && Object.keys(u.fields).length);
+
+    if (!chunk.length) continue;
+
+    const res = await fetch(baseUrl(tableId), {
+      method: "PATCH",
+      headers: headers(),
+      body: JSON.stringify({ records: chunk, typecast: true })
+    });
+    if (!res.ok) throw new Error(`Update failed: HTTP ${res.status} – ${await res.text()}`);
+  }
+}
+
+function renderModuleList(){
+  if (!ui.moduleList) return;
+  const query = (ui.moduleSearch?.value || "").toLowerCase().trim();
+  const selectedTitles = getSelectedTitleIds();
+  const { all, some } = computeAssignedAgg(selectedTitles);
+
+  const itemsSet = new Set([ ...Array.from(state.modules), ...Array.from(state.manualModules) ]);
+  const items = Array.from(itemsSet).sort((a,b)=>a.localeCompare(b));
+
+  const rows = items
+    .filter(m => !query || m.toLowerCase().includes(query))
+    .map(m => {
+      const isAll = all.has(m);
+      const isSome = !isAll && some.has(m);
+      return { name: m, rank: isAll ? 0 : (isSome ? 1 : 2), isAll, isSome };
+    });
+
+  rows.sort((a,b) => (a.rank !== b.rank) ? a.rank - b.rank : a.name.localeCompare(b.name));
+
+  if (rows.length === 0) { ui.moduleList.innerHTML = ""; return; }
+
+  ui.moduleList.innerHTML = rows.map(r => {
+    const selected = state.selectedModules.has(r.name);
+    const cls = `${r.isAll ? "is-all" : r.isSome ? "is-some" : ""} ${selected ? "selected" : ""}`.trim();
+    const tag = r.isAll ? "Assigned (all)" : r.isSome ? "Assigned (some)" : "";
+    return `<li class="${cls}" data-module="${esc(r.name)}">
+      <div class="pick">
+        <input type="checkbox" class="pickbox"${selected?" checked":""} aria-label="select module ${esc(r.name)}"/>
+        <div>
+          <div class="name">${esc(r.name)}</div>
+          <div class="meta">${tag}</div>
+        </div>
+      </div>
+      <span class="tag">${tag}</span>
+    </li>`;
+  }).join("");
+
+  ui.moduleList.querySelectorAll("li").forEach(li => {
+    li.addEventListener("click", (ev) => {
+      const mod = li.getAttribute("data-module");
+      if (!mod) return;
+      const selected = state.selectedModules.has(mod);
+      if (selected) state.selectedModules.delete(mod); else state.selectedModules.add(mod);
+      renderModuleList();
+      updateAssignStatusText();
+    });
+  });
+
+  updateAssignStatusText();
+}
+function getSelectedTitleIds(){
+  const sel = ui.titleSelect;
+  if (!sel) return [];
+  return Array.from(sel.selectedOptions || []).map(o => o.value).filter(Boolean);
+}
 // ========= Wire up =========
-function wire(){
+// ===== Boot & wiring (drop-in) =====
+async function wire(){
+  // ---- events ----
   ui.btnRefresh?.addEventListener("click", refreshList);
   ui.search?.addEventListener("input", debounce(()=> renderModulesView(filterRows(ui.search.value)), 150));
   ui.fltActive?.addEventListener("change", ()=> renderModulesView(filterRows(ui.search?.value||"")));
@@ -808,17 +1228,19 @@ function wire(){
 
   ui.questionType?.addEventListener("change", updateTypeVisibility);
   ui.moduleSelect?.addEventListener("change", toggleModuleNewVisibility);
-ui.btnAddOption?.addEventListener("click", () => {
-  const type = (ui.questionType?.value || "MC").toUpperCase();
-  if (type === "MC") {
-    const count = $$(".opt").length;
-    if (count >= 4) {
-      // Comment out this guard if you want to allow >4
-      return alert("Multiple Choice is limited to 4 options.");
+
+  ui.btnAddOption?.addEventListener("click", () => {
+    const type = (ui.questionType?.value || "MC").toUpperCase();
+    if (type === "MC") {
+      const count = $$(".opt").length;
+      if (count >= 4) {
+        // Comment out this guard if you want to allow >4
+        return alert("Multiple Choice is limited to 4 options.");
+      }
     }
-  }
-  addOption("");
-});
+    addOption("");
+  });
+
   ui.btnClearOptions?.addEventListener("click", ()=> setOptions(["",""]));
 
   // Save (create new row)
@@ -829,26 +1251,30 @@ ui.btnAddOption?.addEventListener("click", () => {
       toast("Saved.");
       resetForm();
       await refreshList();
+      // modules cache may change if a new module was added
+      renderModuleList();
+      renderModuleTitleLinker();
     } catch(e){
       console.error(e);
       toast(e?.message || "Save failed", "bad");
     }
   });
 
-  // Normalize buttons (present in your admin.html toolbar)  :contentReference[oaicite:4]{index=4}
-  ui.btnNormalizeAll?.addEventListener("click", async ()=>{
-    if (ui.normalizeStatus) ui.normalizeStatus.textContent = "Normalizing all modules…";
-    try {
-      const changed = await normalizeAllModules();
-      if (ui.normalizeStatus) ui.normalizeStatus.textContent = `Updated ${changed} records.`;
-      await refreshList();
-      toast("Normalized Order across all modules.");
-    } catch (e) {
-      console.error(e);
-      if (ui.normalizeStatus) ui.normalizeStatus.textContent = "Normalize failed.";
-      toast("Normalize failed", "bad");
-    }
-  });
+  // Normalize buttons
+ui.btnNormalizeAll?.addEventListener("click", async ()=>{
+  if (ui.normalizeStatus) ui.normalizeStatus.textContent = "Normalizing all modules…";
+  try {
+    const changed = await normalizeAllModules(); // <-- use the actual function name
+    if (ui.normalizeStatus) ui.normalizeStatus.textContent = `Updated ${changed} records.`;
+    await refreshList();
+    toast("Normalized Order across all modules.");
+  } catch (e) {
+    console.error(e);
+    if (ui.normalizeStatus) ui.normalizeStatus.textContent = "Normalize failed.";
+    toast("Normalize failed", "bad");
+  }
+});
+
 
   ui.btnNormalizeForModule?.addEventListener("click", async ()=>{
     // Try to detect the first expanded module in the UI; if none, use current select value.
@@ -856,8 +1282,8 @@ ui.btnAddOption?.addEventListener("click", () => {
     if (!expanded) { toast("Open a module group or select one, then click Normalize.", "warn"); return; }
     if (ui.normalizeStatus) ui.normalizeStatus.textContent = `Normalizing “${expanded}”…`;
     try{
-      const changed = await normalizeOrdersForModule(expanded);
-      if (ui.normalizeStatus) ui.normalizeStatus.textContent = `Module “${expanded}”: updated ${changed} records.`;
+      const res = await normalizeOrdersForModule(expanded, { dryRun: false });
+      if (ui.normalizeStatus) ui.normalizeStatus.textContent = `Module “${expanded}”: updated ${res.changed} records.`;
       await refreshList();
       toast(`Normalized Order in “${expanded}”.`);
     } catch (e) {
@@ -867,17 +1293,21 @@ ui.btnAddOption?.addEventListener("click", () => {
     }
   });
 
-  // Initial UI state
+  // ---- initial UI state ----
   updateTypeVisibility();
   toggleModuleNewVisibility();
+  if (ui.options && ui.options.children.length === 0) { setOptions(["","","",""]); }
 
-  // First load
-  refreshList();
+  // ---- first loads (await so dropdowns populate) ----
+  await refreshList();           // loads Questions → builds state.modules
+  await fetchDistinctTitles();   // loads Titles → fills state.titles + detected field names
+  renderModuleList();            // uses state.titles + state.modules
+  renderModuleTitleLinker();     // builds the matrix panel
 }
 
 // Boot
 if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", wire, { once:true });
+  document.addEventListener("DOMContentLoaded", () => { wire().catch(err => console.error("[wire]", err)); }, { once:true });
 } else {
-  wire();
+  wire().catch(err => console.error("[wire]", err));
 }

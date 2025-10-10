@@ -133,7 +133,7 @@
     </div>
     <div class="row" style="gap:8px;align-items:center;margin-top:8px">
   <button id="btnSaveQuestion" class="btn primary" type="button">Save Question</button>
-  <span id="qStatus" class="muted small">—</span>
+  <span id="qStatus" class="muted small"></span>
 </div>
 
   </div>
@@ -202,10 +202,41 @@
     <div class="muted small" style="padding:10px">Loading…</div>
   </div>
 </section>
+<section class="card" id="assign-root" style="margin-top:16px">
+  <h2>Assign Modules to Titles</h2>
+  <div class="muted small">Pick one or more titles on the left, then choose modules on the right and Assign/Unassign.</div>
+  <div class="divider"></div>
 
+  <div class="two-col" style="gap:16px">
+    <!-- Left: Titles -->
+    <div>
+      <div class="row" style="gap:8px; align-items:center">
+        <input id="titleSearch" class="grow" type="search" placeholder="Search titles…" autocomplete="off" />
+        <button id="btnSelectAllTitles" class="btn btn-ghost" type="button">Select all</button>
+        <button id="btnClearTitles" class="btn btn-ghost" type="button">Clear</button>
+      </div>
+      <div class="muted small" id="titleCount" style="margin:6px 0">—</div>
+      <select id="titleSelect" multiple size="12" style="width:100%"></select>
+    </div>
 
- 
+    <!-- Right: Modules -->
+    <div>
+      <div class="row" style="gap:8px; align-items:center">
+        <input id="moduleSearch" class="grow" type="search" placeholder="Search modules…" autocomplete="off" />
+        <button id="btnSelectAllModules" class="btn btn-ghost" type="button">Select all</button>
+        <button id="btnClearModules" class="btn btn-ghost" type="button">Clear</button>
+      </div>
 
+      <ul id="moduleList" class="module-picklist" style="margin-top:6px; padding:0; list-style:none; max-height:260px; overflow:auto"></ul>
+
+      <div class="row" style="gap:8px; align-items:center; margin-top:10px">
+        <button id="btnAssign" class="btn primary" type="button">Assign</button>
+        <button id="btnUnassign" class="btn" type="button">Unassign</button>
+        <span id="assignStatus" class="muted small" style="margin-left:auto">—</span>
+      </div>
+    </div>
+  </div>
+</section>
 
     <!-- Modules ↔ Titles matrix -->
     <section class="card" id="modtitle-root" style="margin-top:16px">
