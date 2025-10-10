@@ -325,14 +325,27 @@ function getOptions(){
     return { text, correct };
   }).filter(o => o.text);
 }
-function setOptions(arr=[], correctText=""){
+function setOptions(arr = [], correctText = ""){
   ui.options.innerHTML = "";
-  if (!arr || !arr.length) arr = ["",""];
-  arr.forEach(text => {
+
+  // Render any provided options first
+  (arr || []).forEach(text => {
     const row = addOption(text);
-    if (text === correctText) row.querySelector(".optCorrect").checked = true;
+    if (String(text) === String(correctText)) {
+      const radio = row.querySelector(".optCorrect");
+      if (radio) radio.checked = true;
+    }
   });
+
+  // If MC is selected, pad to 4 total option rows
+  const type = (ui.questionType?.value || "MC").toUpperCase();
+  if (type === "MC") {
+    ensureFourOptionsForMC();
+  } else {
+    // For FITB we don't show options at all; just leave as-is
+  }
 }
+
 
 // ========= Module helpers (Create/Edit) =========
 const ADD_NEW_VALUE = "__ADD_NEW__";
@@ -451,6 +464,21 @@ function readForm(){
   }
   return fields;
 }
+function ensureFourOptionsForMC() {
+  // Only enforce when MC is currently selected
+  const type = (ui.questionType?.value || "MC").toUpperCase();
+  if (type !== "MC") return;
+
+  // Count existing option rows
+  let count = $$(".opt").length;
+
+  // Always keep at least 4 rows visible (blank if needed)
+  while (count < 4) {
+    addOption("");
+    count++;
+  }
+}
+
 function fillForm(fields){
   const type = (fields["Type"] || "MC").toUpperCase();
   if (ui.questionType) ui.questionType.value = type;
@@ -469,6 +497,7 @@ function fillForm(fields){
   if (type === "MC") {
     const arr = safeParseJSON(fields["Options (JSON)"]);
     setOptions(arr, fields["Correct"] || "");
+    ensureFourOptionsForMC()
   } else {
     const answers = safeParseJSON(fields["FITB Answers (JSON)"]);
     if (ui.fitbAnswers) ui.fitbAnswers.value = (answers || []).join("\n");
@@ -482,18 +511,23 @@ function optionExists(selectEl, value){
 function resetForm(){
   if (ui.questionType) ui.questionType.value = "MC";
   updateTypeVisibility();
+
   if (ui.slideId) ui.slideId.value = "";
   if (ui.order) ui.order.value = "";
   if (ui.questionId) ui.questionId.value = "";
   if (ui.questionText) ui.questionText.value = "";
+
   if (ui.moduleSelect) ui.moduleSelect.value = "";
   if (ui.moduleNewWrap) ui.moduleNewWrap.classList.add("hide");
   if (ui.moduleInput) ui.moduleInput.value = "";
-  setOptions(["","","",""]);
+
+  // For MC by default, show 4 empty options
+  setOptions(["","","",""], "");
   if (ui.fitbAnswers) ui.fitbAnswers.value = "";
   if (ui.fitbUseRegex) ui.fitbUseRegex.checked = false;
   if (ui.fitbCaseSensitive) ui.fitbCaseSensitive.checked = false;
 }
+
 
 // ========= Questions list rendering =========
 function groupByModule(rows){
@@ -774,7 +808,17 @@ function wire(){
 
   ui.questionType?.addEventListener("change", updateTypeVisibility);
   ui.moduleSelect?.addEventListener("change", toggleModuleNewVisibility);
-  ui.btnAddOption?.addEventListener("click", ()=> addOption(""));
+ui.btnAddOption?.addEventListener("click", () => {
+  const type = (ui.questionType?.value || "MC").toUpperCase();
+  if (type === "MC") {
+    const count = $$(".opt").length;
+    if (count >= 4) {
+      // Comment out this guard if you want to allow >4
+      return alert("Multiple Choice is limited to 4 options.");
+    }
+  }
+  addOption("");
+});
   ui.btnClearOptions?.addEventListener("click", ()=> setOptions(["",""]));
 
   // Save (create new row)

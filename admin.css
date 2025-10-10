@@ -552,3 +552,46 @@ textarea#questionText {
 @media (max-width: 720px) {
   #modmap-root .module-list li { grid-template-columns: 1fr; gap: 6px; }
 }
+/* === MC options: show as a single column === */
+#options {
+  display: grid;
+  grid-template-columns: 1fr; /* always one column */
+  gap: 8px;
+}
+
+#options .opt.inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--line, #e8e8e8);
+  border-radius: 10px;
+  background: var(--card, #fff);
+}
+
+/* Keep inputs flexible inside each row */
+#options .opt.inline .optText.grow {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+#options .opt.inline .optCorrect {
+  vertical-align: middle;
+}
+#options .opt.inline .handle {
+  cursor: grab;
+  user-select: none;
+  font-size: 16px;
+  line-height: 1;
+  opacity: .6;
+}
+
+/* (No responsive overrides needed; keep 1 column at all widths) */
+
+
+/* Responsive fallback: if the container is very narrow, wrap into 2 cols or 1 col */
+@media (max-width: 900px) {
+  #options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 520px) {
+  #options { grid-template-columns: 1fr; }
+}
