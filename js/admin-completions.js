@@ -32,6 +32,7 @@
     adminEmail: document.getElementById("adminEmail"),
     btnLogout: document.getElementById("btnLogout"),
     search: document.getElementById("search"),
+    jobTitleFilter: document.getElementById("jobTitleFilter"),
     btnRefresh: document.getElementById("btnRefresh"),
     btnExport: document.getElementById("btnExport"),
     scanStatus: document.getElementById("scanStatus"),
@@ -211,7 +212,7 @@
   }
 
   // ====== Render (grouped by Job Title) ======
-  function renderGrid(records, needle){
+  function renderGrid(records, needle, selectedTitle){
     const q = norm(needle);
     const cols = 5;
 
@@ -220,12 +221,17 @@
       return;
     }
 
-    // search filter first
+    // search + title filter
     const filtered = records.filter(rec => {
+      const titleKey = (rec.jobTitle && rec.jobTitle.trim()) ? rec.jobTitle.trim() : "(No Title)";
+      const titleMatch = selectedTitle === "__ALL__" || titleKey === selectedTitle;
+
       const name = nameFromEmail(rec.email);
       const modules = rec.progress.perModule.map(r=>r.module).join(", ") || "(none)";
       const hay = `${name} ${rec.email} ${modules} ${rec.jobTitle || ""}`.toLowerCase();
-      return !q || hay.indexOf(q) !== -1;
+      const searchMatch = !q || hay.indexOf(q) !== -1;
+
+      return titleMatch && searchMatch;
     });
 
     if (!filtered.length){
@@ -296,14 +302,26 @@
     dom.tbody.innerHTML = rows.join("");
   }
 
-  function toCsv(records){
-    // (unchanged) — You can add Job Title column if you want later
-    const header = ["User Name","User Email","Module","Correct","Total","Percent","All Assigned Complete?"];
+  function toCsv(records, selectedTitle, searchNeedle){
+    const q = norm(searchNeedle);
+    const titleKey = (r)=> (r.jobTitle && r.jobTitle.trim()) ? r.jobTitle.trim() : "(No Title)";
+
+    const filtered = records.filter(r=>{
+      const titleMatch = selectedTitle === "__ALL__" || titleKey(r) === selectedTitle;
+      const name = nameFromEmail(r.email);
+      const modules = r.progress.perModule.map(x=>x.module).join(", ") || "(none)";
+      const hay = `${name} ${r.email} ${modules} ${r.jobTitle || ""}`.toLowerCase();
+      const searchMatch = !q || hay.indexOf(q) !== -1;
+      return titleMatch && searchMatch;
+    });
+
+    const header = ["Job Title","User Name","User Email","Module","Correct","Total","Percent","All Assigned Complete?"];
     const lines = [header.join(",")];
-    for (const r of records){
+    for (const r of filtered){
       for (const pm of r.progress.perModule){
         const pct = Math.round(pm.pct*100);
         lines.push([
+          `"${((titleKey(r))||"").replace(/"/g,'""')}"`,
           `"${(nameFromEmail(r.email) || "").replace(/"/g,'""')}"`,
           `"${(r.email||"").replace(/"/g,'""')}"`,
           `"${(pm.module||"").replace(/"/g,'""')}"`,
@@ -327,6 +345,43 @@
     setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); }, 0);
   }
 
+  // ====== Page state (for filter/search/export cache) ======
+  let cache = [];              // full dataset (all users)
+  let currentTitle = "__ALL__";
+  let currentSearch = "";
+
+  // ====== Build Job Title dropdown from dataset ======
+  function buildTitleDropdown(records){
+    const counts = new Map();
+    for (const r of records){
+      const key = (r.jobTitle && r.jobTitle.trim()) ? r.jobTitle.trim() : "(No Title)";
+      counts.set(key, (counts.get(key)||0)+1);
+    }
+    const keys = Array.from(counts.keys()).sort((a,b)=>a.localeCompare(b, undefined, {sensitivity:"base"}));
+
+    // Preserve current selection if still present
+    const sel = dom.jobTitleFilter;
+    const prev = sel.value || "__ALL__";
+
+    // Rebuild options
+    sel.innerHTML = "";
+    const mk = (val, label)=> {
+      const opt = document.createElement("option");
+      opt.value = val; opt.textContent = label;
+      return opt;
+    };
+    sel.appendChild(mk("__ALL__", `All job titles (${records.length})`));
+    for (const k of keys){
+      const c = counts.get(k)||0;
+      sel.appendChild(mk(k, `${k} (${c})`));
+    }
+
+    // Restore if possible
+    if (prev !== "__ALL__" && counts.has(prev)) sel.value = prev;
+    else sel.value = "__ALL__";
+    currentTitle = sel.value;
+  }
+
   // ====== Main load ======
   async function load(){
     setStatus("Building PID map…");
@@ -348,8 +403,15 @@
     }
 
     setStatus(`Done. ${out.length} users.`);
-    renderGrid(out, dom.search.value);
-    return out;
+
+    // Cache and build dropdown
+    cache = out;
+    buildTitleDropdown(cache);
+
+    // Initial render with current filters
+    renderGrid(cache, currentSearch, currentTitle);
+
+    return cache;
   }
 
   // ====== Wire UI ======
@@ -361,19 +423,33 @@
       else { localStorage.removeItem("authEmail"); location.href = "login.html"; }
     });
 
-    let cache = [];
-    dom.btnRefresh?.addEventListener("click", async () => { cache = await load(); });
-    dom.search?.addEventListener("input", () => renderGrid(cache, dom.search.value));
+    dom.btnRefresh?.addEventListener("click", async () => {
+      await load();
+    });
+
+    dom.search?.addEventListener("input", () => {
+      currentSearch = dom.search.value;
+      renderGrid(cache, currentSearch, currentTitle);
+    });
+
+    dom.jobTitleFilter?.addEventListener("change", () => {
+      currentTitle = dom.jobTitleFilter.value || "__ALL__";
+      renderGrid(cache, currentSearch, currentTitle);
+    });
+
     dom.btnExport?.addEventListener("click", () => {
       if (!cache || !cache.length) return;
-      const csv = toCsv(cache);
+      const csv = toCsv(cache, currentTitle, currentSearch);
       const stamp = new Date().toISOString().slice(0,19).replace(/[:T]/g,"-");
       download(`module-completions-${stamp}.csv`, csv);
     });
 
     // First load
-    load().then(x => { /* cache for quick search & export */ cache = x; })
-          .catch(e => { console.error(e); dom.tbody.innerHTML = `<tr><td colspan="5" class="bad">Load failed.</td></tr>`; setStatus("Load failed"); });
+    load().catch(e => {
+      console.error(e);
+      dom.tbody.innerHTML = `<tr><td colspan="5" class="bad">Load failed.</td></tr>`;
+      setStatus("Load failed");
+    });
   })();
 
 })();

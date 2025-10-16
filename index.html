@@ -89,10 +89,120 @@
       inputE.addEventListener('input', () => localStorage.setItem('trainingEmail', inputE.value.trim()));
     })();
   </script>
+<script>
+// ======================= AUTOSAVE ON EXIT =======================
+// Requires attempt-timer.js to define window.markAttemptComplete()
+// This adds robust "save on navigate/close" hooks.
+// ----------------------------------------------------------------
+(function(){
+  // Ensure attempt-timer is present
+  function hasTimer(){ return typeof window.markAttemptComplete === "function"; }
+
+  // Debounce multiple exit signals in quick succession
+  let lastSaveTs = 0;
+  function shouldSaveNow(){
+    const t = Date.now();
+    if (t - lastSaveTs < 1500) return false; // 1.5s debounce
+    lastSaveTs = t;
+    return true;
+  }
+
+  // Helper to soft-save current attempt then immediately re-arm timer
+  function softSave(reason){
+    if (!hasTimer()) return;
+    if (!shouldSaveNow()) return;
+    try {
+      // Stop & save (attempt-timer.js handles PATCH + summary row)
+      console.log("[autosave-exit] save", reason);
+      window.markAttemptComplete();
+
+      // If we remain on page (e.g., user cancels nav), reattach so timing continues
+      // Pull last known presentation id from state (if your app stores it there)
+      const presId =
+        (window.state && (window.state.presentationId || window.state.id || window.state.currentDeckId)) || "";
+
+      if (presId) {
+        const ev = new CustomEvent("deck:loaded", { detail: { id: String(presId) } });
+        // re-arm shortly after save
+        setTimeout(() => document.dispatchEvent(ev), 120);
+      }
+    } catch (e) {
+      console.warn("[autosave-exit] save failed", reason, e);
+    }
+  }
+
+  // ---------------------- Exit/Navigate hooks ----------------------
+
+  // 1) pagehide fires on navigation away AND on tab close; preferred over unload for SPA/Back-Forward cache
+  //    It also fires with {persisted:true} when entering BFCache; still a good time to save.
+  window.addEventListener("pagehide", (ev) => {
+    softSave(ev.persisted ? "pagehide-persisted" : "pagehide");
+  });
+
+  // 2) beforeunload — legacy but still useful fallback on some browsers/flows
+  //    Do not set returnValue (no prompt) unless you explicitly want a confirm dialog.
+  window.addEventListener("beforeunload", () => {
+    softSave("beforeunload");
+  });
+
+  // 3) visibilitychange — catches tab switch/backgrounding; we already save on hidden in your earlier hooks,
+  //    but keep it here to ensure coverage if the other hook is removed.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") softSave("visibility-hidden");
+  }, { passive: true });
+
+  // 4) freeze (Chrome) — fires right before the page is frozen (suspended)
+  //    This is a good moment to persist quick telemetry; we call softSave as well.
+  //    Not all browsers support this; harmless elsewhere.
+  window.addEventListener("freeze", () => {
+    softSave("freeze");
+  });
+
+  // 5) Link click interception (best-effort): save before same-tab navigations triggered by <a> clicks
+  //    This gives a split second to POST before the navigation proceeds.
+  document.addEventListener("click", (e) => {
+    try {
+      const a = e.target && (e.target.closest ? e.target.closest("a[href]") : null);
+      if (!a) return;
+      const target = (a.getAttribute("target") || "").toLowerCase();
+      const download = a.hasAttribute("download");
+      // Only intercept same-tab navigations (no target, _self) and non-download links
+      if (!download && (!target || target === "_self")) {
+        softSave("link-click");
+      }
+    } catch(_) {}
+  }, true);
+
+  // 6) History API navigations within SPA (pushState/replaceState/back/forward)
+  //    Monkey-patch to hook internal route changes.
+  (function patchHistory(){
+    const HP = window.history && window.history.pushState;
+    const HR = window.history && window.history.replaceState;
+    if (HP) {
+      window.history.pushState = function pushStatePatched(state, title, url){
+        softSave("pushState");
+        return HP.apply(this, arguments);
+      };
+    }
+    if (HR) {
+      window.history.replaceState = function replaceStatePatched(state, title, url){
+        softSave("replaceState");
+        return HR.apply(this, arguments);
+      };
+    }
+    window.addEventListener("popstate", () => softSave("popstate")); // back/forward
+  })();
+
+  // Optional: also save on window blur (user focusing another app quickly)
+  window.addEventListener("blur", () => softSave("blur"));
+})();
+</script>
 
   <!-- main app logic -->
   <script src="js/script.js"></script>
+  <script src="js/attempt-timer.js"></script>
   <script src="js/modules.js"></script>
   <script src="js/auto-load.js"></script>
+
 </body>
 </html>

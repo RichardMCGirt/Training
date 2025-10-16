@@ -29,10 +29,53 @@ const state = {
   quizBySlideId: {},         // slideId → quiz
   answers: {}                // questionId → {answer, isCorrect, at}
 };
+try {
+    // ensure state is visible to other scripts
+    if (typeof window.state !== "object") window.state = state;
 
+    // make sure these helpers are on window too (extra-safe)
+    window.aBaseUrl = window.aBaseUrl || aBaseUrl;
+    window.aHeaders = window.aHeaders || aHeaders;
+    window.getUserEmail = window.getUserEmail || getUserEmail;
+    window.getOrCreateSummaryRecordId =
+      window.getOrCreateSummaryRecordId || getOrCreateSummaryRecordId;
+  } catch (e) {
+    console.warn("[script.js] window export failed", e);
+  }
 /* ========================================================================== */
 /* Utilities                                                                  */
 /* ========================================================================== */
+(function(){
+  if (typeof window.markAttemptComplete !== "function") return; // attempt-timer not loaded yet
+
+  // 1) Save whenever the tab is hidden (pausing a segment already happens)
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      // save current segments without resetting the timer
+      try {
+        // emulate attempt-timer’s internal save (safe if quiz continues)
+        // we can't call the private saveSummary(), so we trigger a soft "complete" then immediately resume a new segment
+        window.markAttemptComplete(); // stop+save+reset
+        // Immediately re-attach/start so timing continues after soft save
+        const presId = (window.state && window.state.presentationId) || "";
+        const ev = new CustomEvent("deck:loaded", { detail: { id: presId } });
+        document.dispatchEvent(ev);
+      } catch (e) { console.warn("[autosave] visibility save failed", e); }
+    }
+  }, { passive: true });
+
+  // 2) Heartbeat autosave every 2 minutes (adjust as needed)
+  let autosaveTimer = setInterval(() => {
+    try {
+      window.markAttemptComplete(); // stop+save+reset
+      const presId = (window.state && window.state.presentationId) || "";
+      const ev = new CustomEvent("deck:loaded", { detail: { id: presId } });
+      document.dispatchEvent(ev);
+      console.log("[autosave] periodic save complete");
+    } catch (e) { console.warn("[autosave] periodic save failed", e); }
+  }, 120000);
+  })();
+
 function getUserEmail(){
   return (el.userEmail?.value
           || localStorage.getItem('trainingEmail')
@@ -40,6 +83,7 @@ function getUserEmail(){
           || ''
          ).trim();
 }
+
 // --- Deep-link helpers: keep URL in sync & jump by QuestionId ----------------
 function updateUrlForCurrentQuestion() {
   try {
@@ -87,6 +131,30 @@ function pulse(msg, kind = "ok"){
   } catch {}
 }
 
+/* ========================================================================== */
+/* Airtable config + helpers                                                  */
+/* ========================================================================== */
+
+const AIR = {
+  API_KEY: "patTGK9HVgF4n1zqK.cbc0a103ecf709818f4cd9a37e18ff5f68c7c17f893085497663b12f2c600054",
+  BASE_ID: "app3rkuurlsNa7ZdQ",
+  QUESTIONS_TABLE_ID: "tblbf2TwwlycoVvQq",
+  ANSWERS_TABLE_ID: "tblkz5HyZGpgO093S",
+  MODULES_TABLE_ID: "tblpvVpIJnkWco25E"
+};
+
+const ANSWER_FIELDS = {
+  RESULT_FIELD: "Result",                 // Single select: "Right" | "Wrong"
+  WRONG_ATTEMPTS_FIELD: "Wrong Attempts", // Number
+  CORRECT_ANSWER_FIELD: "Correct Answer", // Text
+  TIMESTAMP_FIELD: "Timestamp",           // Date with time
+  QUESTION_FIELD: "Question",             // Text (single/long)
+  TYPE_FIELD: "Type",                     // Single select or text ("MC" | "FITB"),
+  COMPLETED_COUNT_FIELD: "Completed Count" // Number: total distinct correct for this user+deck
+};
+
+const RANDOMIZE_QUESTIONS = false;
+
 function baseUrl(t){ return `https://api.airtable.com/v0/${AIR.BASE_ID}/${encodeURIComponent(t)}`; }
 function _headers(){
   return {
@@ -95,28 +163,39 @@ function _headers(){
   };
 }
 
+function qBaseUrl(){ return baseUrl(AIR.QUESTIONS_TABLE_ID); }
+function aBaseUrl(){ return baseUrl(AIR.ANSWERS_TABLE_ID); }
+function qHeaders(){ return _headers(); }
+function aHeaders(){ return _headers(); }
+
+/* ========================================================================== */
+/* Boot                                                                       */
+/* ========================================================================== */
+
 document.addEventListener("DOMContentLoaded", boot);
 
 async function boot(){
   // Resolve module
   const params = new URLSearchParams(location.search);
-  
-   const emailFromUrl = (params.get("userEmail") || "").trim();
+
+  const emailFromUrl = (params.get("userEmail") || "").trim();
   if (emailFromUrl) {
     try { localStorage.setItem("trainingEmail", emailFromUrl); } catch {}
     const emailInp = document.getElementById("userEmail");
     if (emailInp) emailInp.value = emailFromUrl;
   }
+
   // Parse redo list from URL (CSV of QuestionIds)
-state.redoList = [];
-state.redoActive = false;
-{
-  const redoQidsParam = (params.get("redoQids") || "").trim();
-  if (redoQidsParam) {
-    state.redoList = redoQidsParam.split(",").map(s => s.trim()).filter(Boolean);
-    state.redoActive = state.redoList.length > 0;
+  state.redoList = [];
+  state.redoActive = false;
+  {
+    const redoQidsParam = (params.get("redoQids") || "").trim();
+    if (redoQidsParam) {
+      state.redoList = redoQidsParam.split(",").map(s => s.trim()).filter(Boolean);
+      state.redoActive = state.redoList.length > 0;
+    }
   }
-}
+
   const modFromUrl = (params.get("module") || "").trim();
   const modFromLS  = (localStorage.getItem("selectedModule") || "").trim();
   state.module = modFromUrl || modFromLS;
@@ -240,30 +319,10 @@ async function tryFetchSlidesFromGAS(presentationId){
   }
 }
 
-const AIR = {
-  API_KEY: "patTGK9HVgF4n1zqK.cbc0a103ecf709818f4cd9a37e18ff5f68c7c17f893085497663b12f2c600054",
-  BASE_ID: "app3rkuurlsNa7ZdQ",
-  QUESTIONS_TABLE_ID: "tblbf2TwwlycoVvQq",
-  ANSWERS_TABLE_ID: "tblkz5HyZGpgO093S",
-  MODULES_TABLE_ID: "tblpvVpIJnkWco25E"
-};
+/* ========================================================================== */
+/* Questions                                                                  */
+/* ========================================================================== */
 
-const ANSWER_FIELDS = {
-  RESULT_FIELD: "Result",                 // Single select: "Right" | "Wrong"
-  WRONG_ATTEMPTS_FIELD: "Wrong Attempts", // Number
-  CORRECT_ANSWER_FIELD: "Correct Answer", // Text
-  TIMESTAMP_FIELD: "Timestamp",           // Date with time
-  QUESTION_FIELD: "Question",             // Text (single/long)
-  TYPE_FIELD: "Type",                     // Single select or text ("MC" | "FITB"),
-  COMPLETED_COUNT_FIELD: "Completed Count" // Number: total distinct correct for this user+deck
-}
-
-const RANDOMIZE_QUESTIONS = false;
-AIRTABLE.ANSWERS_TABLE_ID = 'tblkz5HyZGpgO093S';
-
-function aBaseUrl(){
-  return `https://api.airtable.com/v0/${AIRTABLE.BASE_ID}/${AIRTABLE.ANSWERS_TABLE_ID}`;
-}
 function showEmbed(presentationId, pageObjectId){
   if (!el.slidesEmbed) return;
   const base = `https://docs.google.com/presentation/d/${encodeURIComponent(presentationId)}/embed`;
@@ -447,7 +506,7 @@ function go(delta){
   const pageId = state.slides[state.i]?.objectId || "";
   showEmbed(state.presentationId, pageId);
   render();
-  updateUrlForCurrentQuestion(); // <— add this
+  updateUrlForCurrentQuestion();
 }
 
 if (el.prevBtn) el.prevBtn.addEventListener("click", () => go(-1));
@@ -456,7 +515,7 @@ if (el.nextBtn) el.nextBtn.addEventListener("click", () => go(+1));
 function render(){
   const total = Math.max(Object.keys(state.quizByIndex).length || 0, state.slides.length);
   const at = Math.min(state.i + 1, Math.max(total, 1));
-if (el.counter) el.counter.textContent = `${state.i + 1} / ${total}`;
+  if (el.counter) el.counter.textContent = `${state.i + 1} / ${total}`;
   if (el.barInner) {
     const pct = total ? Math.round((at*100)/total) : 0;
     el.barInner.style.width = pct + "%";
@@ -472,25 +531,10 @@ if (el.counter) el.counter.textContent = `${state.i + 1} / ${total}`;
   // Buttons
   if (el.prevBtn) el.prevBtn.disabled = state.i <= 0;
   if (el.nextBtn) el.nextBtn.disabled = state.i >= (state.slides.length - 1);
-    updateUrlForCurrentQuestion();
-
+  updateUrlForCurrentQuestion();
 }
 
 /* ------------------ Helpers for current quiz ------------------------------ */
-
-function qBaseUrl(){ return baseUrl(AIR.QUESTIONS_TABLE_ID); }
-function aBaseUrl(){ return baseUrl(AIR.ANSWERS_TABLE_ID); }
-
-function qHeaders(){ return _headers(); }
-function aHeaders(){ return _headers(); }
-
-/* ------------------ Quiz selection ---------------------------------------- */
-function toggleRetakeVisibilityByEmail(){
-  const btn = document.getElementById('retakeQuizBtn');
-  if (!btn) return;
-  const hasEmail = !!getUserEmail();
-  btn.style.display = hasEmail ? 'inline-block' : 'none';
-}
 
 function currentQuizForIndex(i){
   const slide = state.slides[i];
@@ -499,21 +543,6 @@ function currentQuizForIndex(i){
   if (byId) return byId;
   return state.quizByIndex[i] || null;
 }
-function findIndexByQuestionId(qid) {
-  if (!qid) return -1;
-  const max = Math.max(
-    state.slides?.length || 0,
-    Object.keys(state.quizByIndex || {}).length || 0
-  );
-  for (let i = 0; i < max; i++) {
-    const q = currentQuizForIndex(i);
-    if (!q) continue;
-    const id = String(q.questionId ?? q.id ?? "").trim();
-    if (id && id === qid) return i;
-  }
-  return -1;
-}
-
 
 /* ------------------ Render quiz (no prior-answer display) ------------------ */
 
@@ -558,10 +587,9 @@ function renderQuiz(quiz) {
   const btn = el.quizBox.querySelector("#btnSubmit");
   if (btn) btn.addEventListener("click", submitAnswer);
 
-  wireRetakeButton();                  // ← move here
-  toggleRetakeVisibilityByEmail();     // ← show/hide by email
+  wireRetakeButton();
+  toggleRetakeVisibilityByEmail();
 }
-
 
 /* ------------------ Answer reading from UI -------------------------------- */
 
@@ -616,6 +644,10 @@ function toStrArray(v){
   return [String(v ?? "")];
 }
 
+/* ========================================================================== */
+/* Deck load & initialization                                                 */
+/* ========================================================================== */
+
 async function onDeckLoaded(presentationId, slidesArray){
   state.presentationId = presentationId;
 
@@ -641,8 +673,10 @@ async function onDeckLoaded(presentationId, slidesArray){
 
   if (el.prevBtn) el.prevBtn.disabled = state.i <= 0;
   if (el.nextBtn) el.nextBtn.disabled = state.slides.length <= 1;
+
   await initQuizAttempt();
-wireRetakeButton(); 
+  wireRetakeButton();
+
   // Load prior answers ONLY to position progress (never to prefill UI)
   try {
     const prior = await loadExistingAnswersForUser(state.presentationId, getUserEmail());
@@ -651,6 +685,7 @@ wireRetakeButton();
     const pageId = state.slides[state.i]?.objectId || "";
     showEmbed(state.presentationId, pageId);
   } catch(e){ console.warn('Resume load failed', e); }
+
   // If a specific question was requested, jump to it
   try {
     const params = new URLSearchParams(location.search);
@@ -679,21 +714,22 @@ wireRetakeButton();
   }
 
   await recalcAndDisplayProgress({ updateAirtable: false });
+
   try {
-  const params = new URLSearchParams(location.search);
-  const wantedQ = (params.get("questionId") || "").trim();
-  if (!wantedQ && state.redoActive && state.redoList.length) {
-    const first = state.redoList[0];
-    const idx = findIndexByQuestionId(first);
-    if (idx >= 0) {
-      state.i = idx;
-      const pageId2 = state.slides[state.i]?.objectId || "";
-      showEmbed(state.presentationId, pageId2);
+    const params = new URLSearchParams(location.search);
+    const wantedQ = (params.get("questionId") || "").trim();
+    if (!wantedQ && state.redoActive && state.redoList.length) {
+      const first = state.redoList[0];
+      const idx = findIndexByQuestionId(first);
+      if (idx >= 0) {
+        state.i = idx;
+        const pageId2 = state.slides[state.i]?.objectId || "";
+        showEmbed(state.presentationId, pageId2);
+      }
     }
+  } catch (e) {
+    console.warn("redo jump failed", e);
   }
-} catch (e) {
-  console.warn("redo jump failed", e);
-}
 
   render();
 }
@@ -701,7 +737,6 @@ wireRetakeButton();
 /* If another script fires this custom event, we hook in */
 document.addEventListener("deck:loaded", (ev) => {
   const { id, slides } = (ev.detail || {});
-  
   onDeckLoaded(id, slides);
 });
 
@@ -727,7 +762,10 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "ArrowRight") { try { go(+1); } catch{} }
 });
 
-/* ------------------ Submit + save ----------------------------------------- */
+/* ========================================================================== */
+/* Submit + save                                                              */
+/* ========================================================================== */
+
 async function recalcAndDisplayProgress({ updateAirtable = false } = {}){
   try{
     ensureProgressBannerElement();
@@ -813,14 +851,12 @@ async function submitAnswer() {
       presentationId: state.presentationId,
       questionId: qId,
       answer: answerForStorage,
-      isCorrect,
-      correctAnswer: correctAnswerString,
+      isCorrect,      correctAnswer: correctAnswerString,
       questionText: String(quiz.question || ""),
       type,
       timestamp: new Date().toISOString()
     });
 
-    // FIX: remove stray ')' and use known levels
     pulse(isCorrect ? "Saved ✓" : "Incorrect", isCorrect ? "info" : "warn");
 
     try {
@@ -831,41 +867,40 @@ async function submitAnswer() {
     pulse("Save failed", "bad");
   }
 
-  // Always advance
- // Advance behavior
-const curr = currentQuizForIndex(state.i);
-const currId = String(curr?.questionId ?? curr?.id ?? "").trim();
+  // Advance behavior
+  const curr = currentQuizForIndex(state.i);
+  const currId = String(curr?.questionId ?? curr?.id ?? "").trim();
 
-if (state.redoActive && state.redoList.length) {
-  // Find next QID in the redo list after the current one
-  const pos = state.redoList.indexOf(currId);
-  let nextIdx = -1;
-  for (let k = Math.max(0, pos) + 1; k < state.redoList.length; k++) {
-    const idx = findIndexByQuestionId(state.redoList[k]);
-    if (idx >= 0) { nextIdx = idx; break; }
-  }
+  if (state.redoActive && state.redoList.length) {
+    // Find next QID in the redo list after the current one
+    const pos = state.redoList.indexOf(currId);
+    let nextIdx = -1;
+    for (let k = Math.max(0, pos) + 1; k < state.redoList.length; k++) {
+      const idx = findIndexByQuestionId(state.redoList[k]);
+      if (idx >= 0) { nextIdx = idx; break; }
+    }
 
-  if (nextIdx === -1) {
-    pulse("All selected wrong questions reviewed.", "info");
-    setTimeout(()=>{ location.href = "dashboard.html"; }, 700);
+    if (nextIdx === -1) {
+      pulse("All selected wrong questions reviewed.", "info");
+      setTimeout(()=>{ location.href = "dashboard.html"; }, 700);
+      return;
+    }
+
+    state.i = nextIdx;
+    const pageId = state.slides[state.i]?.objectId || "";
+    showEmbed(state.presentationId, pageId);
+    render();
     return;
   }
 
-  state.i = nextIdx;
-  const pageId = state.slides[state.i]?.objectId || "";
-  showEmbed(state.presentationId, pageId);
-  render();
-  return;
-}
-
-// Default: normal next
-if (state.i < state.slides.length - 1) {
-  state.i += 1;
-  const pageId = state.slides[state.i]?.objectId || "";
-  showEmbed(state.presentationId, pageId);
-  render();
-}
-else {
+  // Default: normal next
+  if (state.i < state.slides.length - 1) {
+    state.i += 1;
+    const pageId = state.slides[state.i]?.objectId || "";
+    showEmbed(state.presentationId, pageId);
+    render();
+  }
+  else {
     if (el.retryRow) el.retryRow.style.display = "flex";
   }
 }
@@ -876,8 +911,10 @@ if (el.btnSubmit) {
   el.btnSubmit.addEventListener?.("click", submitAnswer);
 }
 
+/* ========================================================================== */
+/* Answer persistence (UPSERT)                                                */
+/* ========================================================================== */
 
-/* ------------------ Answer persistence (UPSERT) --------------------------- */
 // Count distinct *answered* QuestionIds (any correctness) for this user+deck
 async function countDistinctAnsweredForUserPresentation(presentationId, userEmail){
   if (!userEmail || !presentationId) return 0;
@@ -1093,7 +1130,6 @@ async function updateAttemptSummaryOnAnswersTable({ userEmail, presentationId, a
   }
 }
 
-
 /* ------------------ Resume / prior answers (for positioning only) --------- */
 
 async function loadExistingAnswersForUser(presentationId, userEmail){
@@ -1139,6 +1175,8 @@ async function loadExistingAnswersForUser(presentationId, userEmail){
   return map;
 }
 
+/* ------------------ Attempt management ------------------------------------ */
+
 async function initQuizAttempt() {
   const userEmail = getUserEmail();
   if (!userEmail || !state.presentationId) {
@@ -1163,7 +1201,6 @@ async function initQuizAttempt() {
   return latest;
 }
 
-
 function nextUnansweredIndex(){
   const maxIdx = Object.keys(state.quizByIndex).map(k=>parseInt(k,10)).filter(n=>!Number.isNaN(n));
   const total = maxIdx.length ? Math.max(...maxIdx)+1 : state.slides.length;
@@ -1175,6 +1212,7 @@ function nextUnansweredIndex(){
   }
   return Math.max(0, total - 1);
 }
+
 async function getOrCreateAttemptNumber(userEmail, presentationId) {
   const e = s => String(s || "").replace(/'/g, "\\'");
   const url = new URL(aBaseUrl());
@@ -1200,12 +1238,9 @@ async function getOrCreateAttemptNumber(userEmail, presentationId) {
 
 function getQuestionCount(){
   const idxs = Object.keys(state.quizByIndex).map(k => parseInt(k, 10)).filter(n => !Number.isNaN(n));
-  const byIndexCount = idxs.length ? (Math.max(...idxs) + 1) : 0; // <-- fix spread
+  const byIndexCount = idxs.length ? (Math.max(...idxs) + 1) : 0;
   return Math.max(byIndexCount, 0);
 }
-
-
-/* ------------------ Progress banner + Completed Count syncing ------------- */
 
 function ensureProgressBannerElement(){
   if (document.getElementById("moduleProgress")) return;
@@ -1309,7 +1344,6 @@ async function updateCompletedCountForUserPresentation(userEmail, presentationId
   }
 }
 
-
 /* ------------------ Ensure slide list at least covers questions ----------- */
 
 function ensureSlidesForQuestions(){
@@ -1322,7 +1356,8 @@ function ensureSlidesForQuestions(){
     state.slides.push({ objectId: state.presentationId, title: `Q${state.slides.length+1}`});
   }
 }
-// --- Attempt helpers ---------------------------------------------------------
+
+/* ------------------ Attempt helpers --------------------------------------- */
 
 async function getNextAttemptNumber(userEmail, presentationId) {
   const e = s => String(s || "").replace(/'/g, "\\'");
@@ -1359,9 +1394,8 @@ async function getNextAttemptNumber(userEmail, presentationId) {
   return maxAttempt + 1;
 }
 
+/* ------------------ Retake handling --------------------------------------- */
 
-
-// --- Retake: start new attempt, clear local state, re-render -----------------
 (function hideRetakeUntilEmail(){
   const btn = document.getElementById('retakeQuizBtn');
   if (!btn) return;
@@ -1376,15 +1410,15 @@ async function startNewAttempt() {
     return;
   }
   try {
- const next = await getNextAttemptNumber(userEmail, state.presentationId);
- state.currentAttempt = next;
- localStorage.setItem(`attempt:${userEmail}:${state.presentationId}`, String(next));            // bumps Attempt
+    const next = await getNextAttemptNumber(userEmail, state.presentationId);
+    state.currentAttempt = next;
+    localStorage.setItem(`attempt:${userEmail}:${state.presentationId}`, String(next)); // bumps Attempt
     state.answers = {};                     // clear in-memory map
     state.i = 0;                            // go back to first question
     clearCurrentQuestionUISelections();     // remove any radio/inputs currently selected
- const pageId = state.slides[0]?.objectId || "";
- showEmbed(state.presentationId, pageId);
- render();   
+    const pageId = state.slides[0]?.objectId || "";
+    showEmbed(state.presentationId, pageId);
+    render();
     await recalcAndDisplayProgress({ updateAirtable: true }); // progress -> 0/Total
     pulse(`New attempt started (#${state.currentAttempt}). Good luck!`, "info");
   } catch (e) {
@@ -1408,8 +1442,7 @@ function clearCurrentQuestionUISelections() {
   }
 }
 
-// --- Wire the button (call this once after DOM is ready / deck loaded) -------
-
+// Wire the button (call this once after DOM is ready / deck loaded)
 function wireRetakeButton() {
   const btn = document.getElementById('retakeQuizBtn');
   if (!btn) return;
@@ -1418,4 +1451,10 @@ function wireRetakeButton() {
     if (!ok) return;
     await startNewAttempt();
   });
+}
+function toggleRetakeVisibilityByEmail(){
+  const btn = document.getElementById('retakeQuizBtn');
+  if (!btn) return;
+  const hasEmail = !!getUserEmail();
+  btn.style.display = hasEmail ? 'inline-block' : 'none';
 }

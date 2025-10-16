@@ -1,4 +1,3 @@
-
 (function(){
   "use strict";
 
@@ -8,7 +7,7 @@
     BASE_ID:  "app3rkuurlsNa7ZdQ",
     MODULES_TABLE_ID: "Table3"
   };
-const norm = s => String(s||"").toLowerCase().trim();
+  const norm = s => String(s||"").toLowerCase().trim();
 
   // ========= Helpers =========
   function headers(){
@@ -48,108 +47,126 @@ const norm = s => String(s||"").toLowerCase().trim();
   }
 
   // ========= Find ALL records by Module (case-insensitive) =========
- async function findAllRecordsByModuleStrict(moduleName){
-  const url = new URL(baseUrl(AIRTABLE.MODULES_TABLE_ID));
-  const ff = `LOWER(TRIM({Module}))='${norm(moduleName).replace(/'/g,"\\'")}'`;
-  url.searchParams.set("filterByFormula", ff);
-  url.searchParams.set("pageSize","100");
+  async function findAllRecordsByModuleStrict(moduleName){
+    const url = new URL(baseUrl(AIRTABLE.MODULES_TABLE_ID));
+    const ff = `LOWER(TRIM({Module}))='${norm(moduleName).replace(/'/g,"\\'")}'`;
+    url.searchParams.set("filterByFormula", ff);
+    url.searchParams.set("pageSize","100");
 
-  const out = [];
-  let offset;
-  do {
-    if (offset) url.searchParams.set("offset", offset);
-    const res = await fetch(url.toString(), { headers: h() });
-    if (!res.ok) {
-      const body = await res.text().catch(()=>"(no body)");
-      throw new Error(`Lookup failed: ${res.status} – ${body}`);
-    }
-    const data = await res.json();
-    (data.records||[]).forEach(r => out.push(r));
-    offset = data.offset;
+    const out = [];
+    let offset;
+    do {
+      if (offset) url.searchParams.set("offset", offset);
+      const res = await fetch(url.toString(), { headers: h() });
+      if (!res.ok) {
+        const body = await res.text().catch(()=>"(no body)");
+        throw new Error(`Lookup failed: ${res.status} – ${body}`);
+      }
+      const data = await res.json();
+      (data.records||[]).forEach(r => out.push(r));
+      offset = data.offset;
 
-    if (offset){
-      const u = new URL(baseUrl(AIRTABLE.MODULES_TABLE_ID));
-      u.searchParams.set("pageSize","100");
-      u.searchParams.set("filterByFormula", ff);
-      url.search = u.search;
-    }
-  } while (offset);
+      if (offset){
+        const u = new URL(baseUrl(AIRTABLE.MODULES_TABLE_ID));
+        u.searchParams.set("pageSize","100");
+        u.searchParams.set("filterByFormula", ff);
+        url.search = u.search;
+      }
+    } while (offset);
 
-  return out.filter(r => norm(r?.fields?.Module) === norm(moduleName));
-}
+    return out.filter(r => norm(r?.fields?.Module) === norm(moduleName));
+  }
 
   // ========= Get one config (first match) by Module =========
- function getConfigForModule(moduleName){
-  if (!moduleName) return { presentationId:"", gasUrl:"", active:false };
-  const url = new URL(baseUrl(AIRTABLE.MODULES_TABLE_ID));
+  function getConfigForModule(moduleName){
+    if (!moduleName) return { presentationId:"", gasUrl:"", active:false };
+    const url = new URL(baseUrl(AIRTABLE.MODULES_TABLE_ID));
 
-  // safer match: case-insensitive + trimmed, and only active rows
-  const mod = escSquotes(String(moduleName||""));
-  url.searchParams.set(
-    "filterByFormula",
-    `AND({Active}=1, LOWER(TRIM({Module}))='${mod.toLowerCase().trim()}')`
-  );
-  url.searchParams.set("pageSize","1");
+    // safer match: case-insensitive + trimmed, and only active rows
+    const mod = escSquotes(String(moduleName||""));
+    url.searchParams.set(
+      "filterByFormula",
+      `AND({Active}=1, LOWER(TRIM({Module}))='${mod.toLowerCase().trim()}')`
+    );
+    url.searchParams.set("pageSize","1");
 
-  return (async () => {
-    const res = await fetch(url.toString(), { headers: headers() });
-    if (!res.ok) throw new Error("Lookup failed: "+res.status+" "+await res.text());
-    const data = await res.json();
-    const rec = (data.records && data.records[0]) ? data.records[0] : null;
-    const f = rec?.fields || {};
-    return {
-      id: rec?.id || "",
-      presentationId: String(f["PresentationId"]||"").trim(),
-      gasUrl: String(f["GAS"]||f["GASURL"]||"").trim(),
-      active: !!f["Active"]
-    };
-  })();
-}
+    return (async () => {
+      const res = await fetch(url.toString(), { headers: headers() });
+      if (!res.ok) throw new Error("Lookup failed: "+res.status+" "+await res.text());
+      const data = await res.json();
+      const rec = (data.records && data.records[0]) ? data.records[0] : null;
+      const f = rec?.fields || {};
 
+      // ---- FIX: read both styles so reader matches writer ----
+      const presId =
+        String(
+          f["Presentation ID"] ??
+          f["PresentationId"] ??
+          ""
+        ).trim();
+
+      const gas =
+        String(
+          f["GAS URL"] ??
+          f["GAS"] ??
+          f["GASURL"] ??
+          ""
+        ).trim();
+
+      return {
+        id: rec?.id || "",
+        presentationId: presId,
+        gasUrl: gas,
+        active: !!f["Active"]
+      };
+    })();
+  }
 
   // ========= UPSERT ALL: Patch every record where Module matches; create if none =========
   async function upsertMappingAll({ moduleName, presentationId, gasUrl, active=true }){
-  if (!moduleName) throw new Error("moduleName required");
+    if (!moduleName) throw new Error("moduleName required");
 
-  // STRICT find
-  const matches = await findAllRecordsByModuleStrict(moduleName);
+    // STRICT find
+    const matches = await findAllRecordsByModuleStrict(moduleName);
 
-  const fields = {
-    "Module": moduleName,
-    "Presentation ID": presentationId || "",
-    "GAS URL": gasUrl || "",
-    "Active": !!active
-  };
+    const fields = {
+      "Module": moduleName,
+      // ---- Writer uses spaced names (kept as-is) ----
+      "Presentation ID": presentationId || "",
+      "GAS URL": gasUrl || "",
+      "Active": !!active
+    };
 
-  if (matches.length > 0) {
-    const BATCH = 10;
-    for (let i = 0; i < matches.length; i += BATCH) {
-      const chunk = matches.slice(i, i + BATCH).map(r => ({ id: r.id, fields }));
-      const res = await fetch(baseUrl(AIRTABLE.MODULES_TABLE_ID), {
-        method: "PATCH",
-        headers: h(),
-        body: JSON.stringify({ records: chunk, typecast: true })
-      });
-      if (!res.ok) {
-        const body = await res.text().catch(()=>"(no body)");
+    if (matches.length > 0) {
+      const BATCH = 10;
+      for (let i = 0; i < matches.length; i += BATCH) {
+        const chunk = matches.slice(i, i + BATCH).map(r => ({ id: r.id, fields }));
+        const res = await fetch(baseUrl(AIRTABLE.MODULES_TABLE_ID), {
+          method: "PATCH",
+          headers: h(),
+          body: JSON.stringify({ records: chunk, typecast: true })
+        });
+        if (!res.ok) {
+          const body = await res.text().catch(()=>"(no body)");
+          throw new Error(`Update failed: ${res.status} – ${body}`);
+        }
       }
+      return { updated: matches.length };
     }
-    return { updated: matches.length };
-  }
 
-  // create if none
-  const res = await fetch(baseUrl(AIRTABLE.MODULES_TABLE_ID), {
-    method: "POST",
-    headers: h(),
-    body: JSON.stringify({ records: [{ fields }], typecast: true })
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(()=>"(no body)");
-    throw new Error(`Create failed: ${res.status} – ${body}`);
+    // create if none
+    const res = await fetch(baseUrl(AIRTABLE.MODULES_TABLE_ID), {
+      method: "POST",
+      headers: h(),
+      body: JSON.stringify({ records: [{ fields }], typecast: true })
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(()=>"(no body)");
+      throw new Error(`Create failed: ${res.status} – ${body}`);
+    }
+    const created = await res.json();
+    return { created: created.records?.length || 0, ids: (created.records||[]).map(r=>r.id) };
   }
-  const created = await res.json();
-  return { created: created.records?.length || 0, ids: (created.records||[]).map(r=>r.id) };
-}
 
   // ========= Delete by record id =========
   async function deleteMappingById(id){

@@ -15,6 +15,15 @@
       padding: 10px 12px;
       border-top: 2px solid #e5e7eb;
     }
+    .controls .row { gap: 8px; flex-wrap: wrap; }
+    .controls .row > * { height: 36px; }
+    #jobTitleFilter {
+      min-width: 240px;
+      padding: 6px 10px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      background: #fff;
+    }
   </style>
 </head>
 <body>
@@ -36,8 +45,11 @@
     </nav>
 
     <div class="card controls">
-      <div class="row">
+      <div class="row" style="align-items:center">
         <input id="search" type="text" placeholder="Search by user, module, or job title…" />
+        <select id="jobTitleFilter" aria-label="Filter by job title">
+          <option value="__ALL__">All job titles</option>
+        </select>
         <button id="btnRefresh" class="btn">Refresh</button>
         <button id="btnExport" class="btn">Export CSV</button>
         <span id="scanStatus" class="muted status"></span>
@@ -75,7 +87,7 @@
   <script src="js/auth.js"></script>
   <script src="js/modules.js"></script>
 
-  <!-- New logic for this page -->
+  <!-- Page logic -->
   <script src="js/admin-completions.js"></script>
   <script>
     // Gate like your other admin pages
