@@ -1,12 +1,3 @@
-/* Admin – Module Completion Grid
- * - Lists users from Titles/Users table with their assigned modules (Assigned Modules Mapping)
- * - For each user+module: % complete = distinct correct answers / total active questions in module
- * - “Complete?” = 100% (or configurable threshold)
- *
- * Relies on your existing schema and helpers used elsewhere in the app.
- * Airtable tables/fields mirror dashboard.js & script.js usage.
- */
-
 (function(){
   "use strict";
 
@@ -22,6 +13,8 @@
   const FIELDS = {
     ASSIGNED_MAP: "Assigned Modules Mapping", // Titles/Users
     USER_EMAIL: "Email",                      // Titles/Users
+    JOB_TITLE: "Job Title",                   // Titles/Users (preferred)
+    // Fallback to "Title" if your base uses that field name:
     QUESTION: "Question",
     TYPE: "Type",
     RESULT: "Result",                         // "Right"/"Wrong"
@@ -89,7 +82,7 @@
 
   // ====== Data fetchers ======
   async function fetchUsersWithAssignedModules(){
-    // Titles/Users table: Email + Assigned Modules Mapping (string or array)
+    // Titles/Users table: Email + Assigned Modules Mapping (+ Job Title)
     const out = [];
     let offset;
     do {
@@ -102,11 +95,22 @@
       for (const r of (data.records||[])){
         const f = r.fields||{};
         const email = String(f[FIELDS.USER_EMAIL]||"").trim();
+
+        // Backward-compatible job title extraction:
+        const jobTitle =
+          String(f[FIELDS.JOB_TITLE] ?? f["Title"] ?? "").trim();
+
         let assigned = f[FIELDS.ASSIGNED_MAP];
         let list = [];
         if (Array.isArray(assigned)) list = assigned.map(s=>String(s||"").trim()).filter(Boolean);
         else if (typeof assigned === "string") list = String(assigned).split(/[,;\n]/g).map(s=>s.trim()).filter(Boolean);
-        out.push({ id:r.id, email, modules: Array.from(new Set(list.map(m=>m.trim()).filter(Boolean))) });
+
+        out.push({
+          id: r.id,
+          email,
+          jobTitle,
+          modules: Array.from(new Set(list.map(m=>m.trim()).filter(Boolean)))
+        });
       }
       offset = data.offset;
     } while(offset);
@@ -206,55 +210,94 @@
     return { perModule: rows, overall, allComplete };
   }
 
-  // ====== Render ======
+  // ====== Render (grouped by Job Title) ======
   function renderGrid(records, needle){
     const q = norm(needle);
+    const cols = 5;
+
     if (!records.length){
-      dom.tbody.innerHTML = `<tr><td colspan="5" class="muted">No data.</td></tr>`;
+      dom.tbody.innerHTML = `<tr><td colspan="${cols}" class="muted">No data.</td></tr>`;
       return;
     }
 
-    const rows = [];
-    for (const rec of records){
+    // search filter first
+    const filtered = records.filter(rec => {
       const name = nameFromEmail(rec.email);
       const modules = rec.progress.perModule.map(r=>r.module).join(", ") || "(none)";
-      const overallPct = pctStr(rec.progress.overall);
-      const allDone = rec.progress.allComplete;
+      const hay = `${name} ${rec.email} ${modules} ${rec.jobTitle || ""}`.toLowerCase();
+      return !q || hay.indexOf(q) !== -1;
+    });
 
-      // search filter
-      const hay = `${name} ${rec.email} ${modules}`.toLowerCase();
-      if (q && hay.indexOf(q) === -1) continue;
-
-      const modHtml = rec.progress.perModule.length
-        ? rec.progress.perModule.map(r=>{
-            const w = Math.max(0, Math.min(100, Math.round(r.pct*100)));
-            const cls = r.complete ? "right" : (w>0 ? "warn" : "bad");
-            return `
-              <div style="margin:6px 0">
-                <div class="row" style="justify-content:space-between"><strong>${r.module}</strong><span class="${cls}">${w}%</span></div>
-                <div class="bar"><i style="width:${w}%"></i></div>
-                <div class="tiny muted">${r.correct} of ${r.qTotal} correct</div>
-              </div>`;
-          }).join("")
-        : `<span class="muted">(no assigned modules)</span>`;
-
-      rows.push(`
-        <tr>
-          <td>
-            <div><strong>${name || "(unknown)"}</strong></div>
-            <div class="mono tiny muted">${rec.email||""}</div>
-          </td>
-          <td>${modules || "<span class='muted'>(none)</span>"}</td>
-          <td>${modHtml}</td>
-          <td><strong>${overallPct}</strong></td>
-          <td>${allDone ? "<span class='pill'>Yes</span>" : "<span class='pill'>No</span>"}</td>
-        </tr>`);
+    if (!filtered.length){
+      dom.tbody.innerHTML = `<tr><td colspan="${cols}" class="muted">No matches.</td></tr>`;
+      return;
     }
 
-    dom.tbody.innerHTML = rows.length ? rows.join("") : `<tr><td colspan="5" class="muted">No matches.</td></tr>`;
+    // Group by job title (fallback "(No Title)")
+    const groups = new Map();
+    for (const rec of filtered){
+      const key = (rec.jobTitle && rec.jobTitle.trim()) ? rec.jobTitle.trim() : "(No Title)";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(rec);
+    }
+
+    // Sort groups alphabetically, and users within each group by name
+    const groupKeys = Array.from(groups.keys()).sort((a,b)=>a.localeCompare(b, undefined, {sensitivity:"base"}));
+
+    const rows = [];
+    for (const gKey of groupKeys){
+      // Group header row
+      rows.push(`
+        <tr class="group-row">
+          <th colspan="${cols}">Job Title: ${gKey}</th>
+        </tr>
+      `);
+
+      const recs = groups.get(gKey) || [];
+      recs.sort((a,b)=>{
+        const an = nameFromEmail(a.email);
+        const bn = nameFromEmail(b.email);
+        return an.localeCompare(bn, undefined, {sensitivity:"base"});
+      });
+
+      for (const rec of recs){
+        const name = nameFromEmail(rec.email);
+        const modules = rec.progress.perModule.map(r=>r.module).join(", ") || "(none)";
+        const overallPct = pctStr(rec.progress.overall);
+        const allDone = rec.progress.allComplete;
+
+        const modHtml = rec.progress.perModule.length
+          ? rec.progress.perModule.map(r=>{
+              const w = Math.max(0, Math.min(100, Math.round(r.pct*100)));
+              const cls = r.complete ? "right" : (w>0 ? "warn" : "bad");
+              return `
+                <div style="margin:6px 0">
+                  <div class="row" style="justify-content:space-between"><strong>${r.module}</strong><span class="${cls}">${w}%</span></div>
+                  <div class="bar"><i style="width:${w}%"></i></div>
+                  <div class="tiny muted">${r.correct} of ${r.qTotal} correct</div>
+                </div>`;
+            }).join("")
+          : `<span class="muted">(no assigned modules)</span>`;
+
+        rows.push(`
+          <tr>
+            <td>
+              <div><strong>${name || "(unknown)"}</strong></div>
+              <div class="mono tiny muted">${rec.email||""}</div>
+            </td>
+            <td>${modules || "<span class='muted'>(none)</span>"}</td>
+            <td>${modHtml}</td>
+            <td><strong>${overallPct}</strong></td>
+            <td>${allDone ? "<span class='pill'>Yes</span>" : "<span class='pill'>No</span>"}</td>
+          </tr>`);
+      }
+    }
+
+    dom.tbody.innerHTML = rows.join("");
   }
 
   function toCsv(records){
+    // (unchanged) — You can add Job Title column if you want later
     const header = ["User Name","User Email","Module","Correct","Total","Percent","All Assigned Complete?"];
     const lines = [header.join(",")];
     for (const r of records){
@@ -301,7 +344,7 @@
     for (const u of users){
       setStatus(`Computing progress… ${++done}/${users.length}`);
       const progress = await computeProgressForUser(u, qCountsByModule);
-      out.push({ email: u.email, modules: u.modules, progress });
+      out.push({ email: u.email, jobTitle: u.jobTitle, modules: u.modules, progress });
     }
 
     setStatus(`Done. ${out.length} users.`);

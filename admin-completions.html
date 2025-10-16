@@ -5,7 +5,17 @@
   <title>Admin – Module Completion</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="stylesheet" href="style/admincompletetion.css">
-
+  <style>
+    /* Optional: subtle styling for Job Title group headers */
+    .group-row th {
+      background: #f4f6f8;
+      color: #333;
+      text-align: left;
+      font-weight: 600;
+      padding: 10px 12px;
+      border-top: 2px solid #e5e7eb;
+    }
+  </style>
 </head>
 <body>
   <div class="wrap">
@@ -19,18 +29,15 @@
     </header>
 
     <nav class="nav">
-
-  <ul class="nav-list">
-    <li><a href="./dashboard.html" data-route="dashboard.html">Dashboard</a></li>
+      <ul class="nav-list">
+        <li><a href="./dashboard.html" data-route="dashboard.html">Dashboard</a></li>
         <li><a href="./admin.html" data-route="admin.html">Admin</a></li>
-
- 
-  </ul>
-</nav>
+      </ul>
+    </nav>
 
     <div class="card controls">
       <div class="row">
-        <input id="search" type="text" placeholder="Search by user or module…" />
+        <input id="search" type="text" placeholder="Search by user, module, or job title…" />
         <button id="btnRefresh" class="btn">Refresh</button>
         <button id="btnExport" class="btn">Export CSV</button>
         <span id="scanStatus" class="muted status"></span>
