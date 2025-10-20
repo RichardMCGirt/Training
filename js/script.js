@@ -84,6 +84,202 @@ function getUserEmail(){
          ).trim();
 }
 
+// ====== DEBUG SWITCH (add near top-level utilities) ======
+// ======================= FITB DEBUG SWITCH =======================
+// Turn on via ?debugFitb=1 or sticky localStorage
+const DEBUG_FITB = (() => {
+  try {
+    const q = new URLSearchParams(location.search);
+    if (q.get("debugFitb") === "1") {
+      localStorage.setItem("__debugFitb", "1");   // persist for this browser
+      return true;
+    }
+    return localStorage.getItem("__debugFitb") === "1";
+  } catch {
+    return false;
+  }
+})();
+
+// Optional: quick console helper to toggle and reload
+window.__toggleFitbDebug = (on = true) => {
+  try { localStorage.setItem("__debugFitb", on ? "1" : "0"); } catch {}
+  location.reload();
+};
+
+// Your logger
+function dlog(...args){ if (DEBUG_FITB) { try { console.log("[FITB-DEBUG]", ...args); } catch {} } }
+
+
+// ======================= Normalization helpers ===================
+// Map of common “smart” punctuation to ASCII
+const PUNCT_MAP = {
+  "’": "'", "‘": "'", "“": '"', "”": '"', "—": "-", "–": "-", "…": "...",
+  "\u00A0": " ", // NBSP -> space
+};
+
+// Replace mapped punctuation/specials
+function replaceSmart(s){
+  let t = String(s || "");
+  for (const [k,v] of Object.entries(PUNCT_MAP)) t = t.split(k).join(v);
+  return t;
+}
+
+// Unicode normalize + strip diacritics
+function stripDiacritics(s){
+  try {
+    return s.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+  } catch {
+    return s;
+  }
+}
+
+// Collapse any whitespace runs
+function collapseSpaces(s){
+  return String(s || "").replace(/\s+/g, " ").trim();
+}
+
+// Remove common punctuation for text compare
+function stripCommonPunct(s){
+  return String(s || "")
+    .replace(/[.,;:!?'"`\-–—_/\\()[\]{}|@#$%^&*<>+=~]/g, " ")
+    .replace(/\s+/g, " ").trim();
+}
+
+// Simple synonym pass (extend as needed)
+function synonymize(s){
+  let t = ` ${s} `;
+  t = t.replace(/\s*&\s*/gi, " and ");
+  t = t.replace(/\b(n\/a|na)\b/gi, " not applicable ");
+  return collapseSpaces(t);
+}
+
+// Final normalization pipeline
+function normForCompare(s, { caseSensitive=false, removePunct=true } = {}){
+  let t = String(s ?? "");
+  t = replaceSmart(t);
+  t = stripDiacritics(t);
+  try { t = t.normalize("NFKC"); } catch {}
+  if (!caseSensitive) t = t.toLowerCase();
+  t = collapseSpaces(t);
+  if (removePunct) t = stripCommonPunct(t);
+  t = synonymize(t);
+  return t;
+}
+
+// ======================= Levenshtein (fuzzy) =====================
+function levenshtein(a, b){
+  a = String(a||""); b = String(b||"");
+  const m = a.length, n = b.length;
+  if (m === 0) return n; if (n === 0) return m;
+  const dp = new Array(n + 1);
+  for (let j = 0; j <= n; j++) dp[j] = j;
+  for (let i = 1; i <= m; i++){
+    let prev = dp[0]; dp[0] = i;
+    for (let j = 1; j <= n; j++){
+      const tmp = dp[j];
+      dp[j] = Math.min(
+        dp[j] + 1,                  // deletion
+        dp[j-1] + 1,                // insertion
+        prev + (a[i-1] === b[j-1] ? 0 : 1) // substitution
+      );
+      prev = tmp;
+    }
+  }
+  return dp[n];
+}
+
+// ======================= Array parsing ===========================
+function toStrArrayLoose(v){
+  if (Array.isArray(v)) return v.map(x => String(x ?? ""));
+  if (typeof v === "string") {
+    const s = v.trim();
+    if (!s) return [];
+    if (s.startsWith("[") && s.endsWith("]")) {
+      try {
+        const arr = JSON.parse(s);
+        return Array.isArray(arr) ? arr.map(x => String(x ?? "")) : [s];
+      } catch { return [s]; }
+    }
+    return s.split("|").map(x => x.trim()).filter(Boolean);
+  }
+  return [String(v ?? "")];
+}
+
+// ======================= Loose FITB comparator ===================
+function isFitbCorrectLoose(userAnswer, correctAnswers, opts = {}) {
+  const {
+    useRegex = false,
+    caseSensitive = false,
+    removePunct = true,
+    allowAnyOrder = true,
+    maxEditDistance = 1               // typo tolerance per token
+  } = opts;
+
+  const userRaw = toStrArrayLoose(userAnswer);
+  const corrRaw = toStrArrayLoose(correctAnswers);
+  dlog("raw", { userRaw, corrRaw, opts });
+
+  // Regex path (only if explicitly authored as regex)
+  if (useRegex) {
+    const flags = caseSensitive ? "" : "i";
+    const patterns = corrRaw.map(p => {
+      try { return new RegExp(p, flags); } catch { return null; }
+    }).filter(Boolean);
+    dlog("regex patterns", patterns.map(rx => String(rx)));
+    if (!userRaw.length) return false;
+    const ok = userRaw.every(u => patterns.some(rx => rx.test(String(u || ""))));
+    dlog("regex result", ok);
+    return ok;
+  }
+
+  // Normalize
+  const user = userRaw.map(s => normForCompare(s, { caseSensitive, removePunct })).filter(Boolean);
+  const corr = corrRaw.map(s => normForCompare(s, { caseSensitive, removePunct })).filter(Boolean);
+  dlog("normalized", { user, corr });
+
+  // Trivial cases
+  if (!user.length && corr.length === 0) return true;
+  if (!user.length) return false;
+
+  // Helper: match one token allowing small typos
+  function matchesWithTolerance(u, candidates){
+    for (const c of candidates){
+      if (u === c) return true;
+      if (maxEditDistance > 0 && levenshtein(u, c) <= maxEditDistance) return true;
+    }
+    return false;
+  }
+
+  // Ordered vs any-order
+  if (!allowAnyOrder && user.length === corr.length){
+    const ok = user.every((u, i) => matchesWithTolerance(u, [corr[i]]));
+    dlog("ordered compare", ok, { pairs: user.map((u,i)=>[u,corr[i], levenshtein(u,corr[i])]) });
+    return ok;
+  } else {
+    const remaining = corr.slice();
+    const pairs = [];
+    const ok = user.every(u => {
+      let bestIdx = -1, bestDist = Infinity;
+      for (let i = 0; i < remaining.length; i++){
+        const c = remaining[i];
+        const dist = (u === c) ? 0 : levenshtein(u, c);
+        if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+        if (dist <= maxEditDistance) { bestIdx = i; bestDist = dist; break; }
+      }
+      if (bestIdx >= 0 && bestDist <= maxEditDistance){
+        pairs.push([u, remaining[bestIdx], bestDist]);
+        remaining.splice(bestIdx, 1);
+        return true;
+      }
+      return false;
+    });
+    dlog("set compare", ok, { pairs });
+    return ok;
+  }
+}
+
+
+
 // --- Deep-link helpers: keep URL in sync & jump by QuestionId ----------------
 function updateUrlForCurrentQuestion() {
   try {
@@ -422,6 +618,13 @@ async function fetchQuestionsFromAirtable(){
       fitbUseRegex,
       fitbCaseSensitive
     };
+// After you set up 'q' for each record:
+const corrField = String(f["Correct"] ?? "").trim();
+
+// If Type is FITB but FITB Answers is empty, use Correct as the answer list
+if (q.type === "FITB" && (!q.fitbAnswers || q.fitbAnswers.length === 0)) {
+  q.fitbAnswers = toStrArrayLoose(corrField); // accepts JSON array or pipe string or single value
+}
 
     const slideId = f["Slide ID"] || "";
     if (slideId) {
@@ -805,44 +1008,71 @@ async function submitAnswer() {
   const userEmail = getUserEmail();
   if (!userEmail) return pulse("Enter your email to save.", "warn");
 
-  // Resolve a stable QuestionId (works whether your quiz object uses questionId or id)
   const qId = String(quiz.questionId ?? quiz.id ?? "").trim();
-  if (!qId) {
-    console.warn("submitAnswer: missing question id on quiz object", quiz);
-    return pulse("Internal error: missing QuestionId.", "bad");
-  }
+  if (!qId) return pulse("Internal error: missing QuestionId.", "bad");
 
-  // Read user's answer (string for MC, string/array for FITB)
   const ansRaw = getUserAnswer(quiz);
   if ((ansRaw == null || ansRaw === "" || (Array.isArray(ansRaw) && ansRaw.length === 0)) && quiz.required) {
     return pulse("Answer required.", "warn");
   }
 
-  // Determine correctness
+  // ---- Correctness: compute ONCE, using the loose checker ----
   const type = String(quiz.type || "").toUpperCase();
-  let isCorrect;
+  let isCorrect = false;
+
   if (type === "MC") {
     isCorrect = String(ansRaw ?? "") === String(quiz.correct ?? "");
+    dlog("MC compare", { ansRaw, correct: quiz.correct, isCorrect });
   } else {
-    // FITB: use your parsed answers & flags
-    const corrFITB = quiz.fitbAnswers ?? "";
-    isCorrect = isFitbCorrect(
-      ansRaw,
-      corrFITB,
-      { useRegex: !!quiz.fitbUseRegex, caseSensitive: !!quiz.fitbCaseSensitive }
-    );
+// Inside submitAnswer(), replace the FITB correctness block with:
+const isRegex = !!quiz.fitbUseRegex;          // from Airtable field “FITB Use Regex”
+const isCase  = !!quiz.fitbCaseSensitive;     // from Airtable field “FITB Case Sensitive”
+// FITB branch inside submitAnswer()
+const corrFITB = (() => {
+  // prefer explicit FITB answers; fallback to Correct string
+  const a = quiz.fitbAnswers;
+  if (Array.isArray(a) && a.length) return a;
+  const c = (quiz.correct ?? "");
+  return c ? toStrArrayLoose(c) : [];
+})();
+
+isCorrect = isFitbCorrectLoose(
+  ansRaw,
+  corrFITB,
+  {
+    useRegex: !!quiz.fitbUseRegex,
+    caseSensitive: !!quiz.fitbCaseSensitive,
+    removePunct: true,
+    allowAnyOrder: true,
+    maxEditDistance: 1
+  }
+);
+
+// Helpful debug:
+dlog("FITB compare final", { ansRaw, corrFITB, isCorrect });
+
+
   }
 
-  // Local progress (don't overwrite a previous TRUE)
+  // ---- Immediate, consistent UI feedback (based on the one true isCorrect) ----
+  if (isCorrect) {
+    pulse("✅ Correct!", "ok");
+  } else {
+    const hint = DEBUG_FITB ? ` Entered: "${String(ansRaw || "")}"` : "";
+    pulse("❌ Incorrect. Try again." + hint, "warn");
+  }
+
+  // ---- Persist local state (don’t overwrite prior TRUE) ----
   const prev = state.answers[qId];
   if (!(prev && prev.isCorrect === true)) {
     state.answers[qId] = { answer: ansRaw, isCorrect, at: Date.now() };
   }
 
-  // Build display strings
+  // ---- Build storage fields & save to Airtable ----
   const correctAnswerString = (type === "MC")
     ? String(quiz.correct ?? "")
     : buildCorrectAnswerDisplay(quiz.fitbAnswers ?? "");
+
   const answerForStorage = Array.isArray(ansRaw) ? ansRaw.join(" | ") : String(ansRaw ?? "");
 
   try {
@@ -851,13 +1081,12 @@ async function submitAnswer() {
       presentationId: state.presentationId,
       questionId: qId,
       answer: answerForStorage,
-      isCorrect,      correctAnswer: correctAnswerString,
+      isCorrect,
+      correctAnswer: correctAnswerString,
       questionText: String(quiz.question || ""),
       type,
       timestamp: new Date().toISOString()
     });
-
-    pulse(isCorrect ? "Saved ✓" : "Incorrect", isCorrect ? "info" : "warn");
 
     try {
       await recalcAndDisplayProgress({ updateAirtable: true });
@@ -867,43 +1096,18 @@ async function submitAnswer() {
     pulse("Save failed", "bad");
   }
 
-  // Advance behavior
-  const curr = currentQuizForIndex(state.i);
-  const currId = String(curr?.questionId ?? curr?.id ?? "").trim();
-
-  if (state.redoActive && state.redoList.length) {
-    // Find next QID in the redo list after the current one
-    const pos = state.redoList.indexOf(currId);
-    let nextIdx = -1;
-    for (let k = Math.max(0, pos) + 1; k < state.redoList.length; k++) {
-      const idx = findIndexByQuestionId(state.redoList[k]);
-      if (idx >= 0) { nextIdx = idx; break; }
-    }
-
-    if (nextIdx === -1) {
-      pulse("All selected wrong questions reviewed.", "info");
-      setTimeout(()=>{ location.href = "dashboard.html"; }, 700);
-      return;
-    }
-
-    state.i = nextIdx;
-    const pageId = state.slides[state.i]?.objectId || "";
-    showEmbed(state.presentationId, pageId);
-    render();
-    return;
-  }
-
-  // Default: normal next
+  // ---- Navigation (unchanged) ----
   if (state.i < state.slides.length - 1) {
     state.i += 1;
     const pageId = state.slides[state.i]?.objectId || "";
     showEmbed(state.presentationId, pageId);
     render();
-  }
-  else {
+  } else {
     if (el.retryRow) el.retryRow.style.display = "flex";
   }
 }
+
+
 
 // Wire the submit button AFTER (re)rendering the question UI:
 if (el.btnSubmit) {
