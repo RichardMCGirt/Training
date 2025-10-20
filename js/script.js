@@ -1050,8 +1050,6 @@ isCorrect = isFitbCorrectLoose(
 
 // Helpful debug:
 dlog("FITB compare final", { ansRaw, corrFITB, isCorrect });
-
-
   }
 
   // ---- Immediate, consistent UI feedback (based on the one true isCorrect) ----
